@@ -1,0 +1,11 @@
+.DS_Store
+*.pcap
+captures/
+*.log
+*.ldb
+*.pem
+*.key
+*_private_key*
+nas-root-key*
+.wdav_creds
+.env

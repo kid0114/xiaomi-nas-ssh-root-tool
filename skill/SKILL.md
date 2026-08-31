@@ -78,8 +78,8 @@ CERT_ARGS_WD="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY --resolve 
 
 Get WebDAV credentials:
 ```sh
-curl -s $CERT_ARGS -X POST -d '{}' \
-  "https://$CN/cgi-bin/luci/admin/filemgr/get_pool_info" | python3 -m json.tool
+curl -s $CERT_ARGS -X POST -d '{"selector":["webDAV"]}' \
+  "https://$CN/cgi-bin/luci/filemgr/get_pool_info" | python3 -m json.tool
 # Extract response webDAV fields: username, password, port=5000.
 
 echo "<username>:<password>" > /tmp/.wdav_creds && chmod 600 /tmp/.wdav_creds
@@ -166,7 +166,8 @@ NAS-side script to change root shell:
 ```sh
 cat >/tmp/setshell.sh <<'SH'
 #!/bin/sh
-cp /etc/passwd /runtime/passwd.bak-pre-ssh
+mkdir -p /runtime 2>/dev/null || true
+cp /etc/passwd /runtime/passwd.bak-pre-ssh 2>/dev/null || cp /etc/passwd /tmp/passwd.bak-pre-ssh 2>/dev/null || true
 usermod -s /bin/sh root
 echo SHELL_OK
 SH

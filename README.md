@@ -1,4 +1,6 @@
-# Xiaomi NAS SSH/root recovery toolkit
+# 打开小米 NAS SSH/root 权限的 Skill
+
+这是一个用于打开小米 NAS SSH/root 权限的 Pi/Grok coding-agent skill，同时附带可独立运行的脚本和脱敏流程文档。
 
 这个仓库用于整理并自动化“小米 NAS 稳定开启 SSH/root”的本地恢复流程：通过机主已经登录的小米智能存储桌面端生成的客户端证书，获取 WebDAV 凭据，再利用 WebDAV 路径注入通道在 NAS 本机执行必要的 SSH 启用步骤。
 

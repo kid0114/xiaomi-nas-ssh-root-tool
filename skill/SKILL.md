@@ -18,15 +18,35 @@ Runtime/owner-specific context:
 - Always ask for or detect the current owner's `NAS_IP` at runtime. Do not hard-code a previous user's/device's IP into commands, scripts, pcap filenames, summaries, or chat replies.
 - Derive `WORK_IP` from the active route/interface for that `NAS_IP`; do not assume a fixed subnet.
 - Xiaomi NAS desktop app path on macOS is usually `/Applications/小米智能存储.app`.
-- Cert directory is commonly inside the app bundle: `/Applications/小米智能存储.app/Contents/Resources/extraResources/cert`.
+- macOS cert directory is commonly inside the app bundle: `/Applications/小米智能存储.app/Contents/Resources/extraResources/cert`.
+- Windows 11 app path has been observed as `C:\Program Files\SmartStorage\小米智能存储.exe`; after SMS/code login and visiting the NAS file page, certs were observed in `%LOCALAPPDATA%\minasCert`.
+- Windows 11 + conda Python 3.13.15 has been validated end-to-end with the Python runner: WebDAV credentials, PUT, injection, root callback, dropbear key install, SSH verification, and local SSH config alias all completed successfully.
 - Cert basename, client cert CN, server TLS CN, WebDAV username/password, tokens, and dynamic ports are per-device/per-login. Discover them for the current owner and keep them redacted in chat.
 - Current app codesign may become invalid because Xiaomi/app workflows add cert resources under `Contents/Resources/extraResources/cert/`; verify but don't treat this alone as failure.
 - Use Homebrew curl `/opt/homebrew/opt/curl/bin/curl`; Apple `/usr/bin/curl` may fail to load EC client keys with LibreSSL unsupported algorithm.
 - Correct LuCI API path for pool info is `/cgi-bin/luci/filemgr/get_pool_info` (not `/cgi-bin/luci/admin/filemgr/get_pool_info`, which can return 403).
-- Store WebDAV credentials as `username:password` in `/tmp/.wdav_creds` with mode 600. Never print the password in chat.
+- Store WebDAV credentials as `username:password` in `/tmp/.wdav_creds` on bash/macOS or the OS temp directory for Python; mode 600 where supported. Never print the password in chat.
 - User may need to log into the Xiaomi NAS app using account/password before monitoring; treat app-derived tokens/WebDAV credentials as sensitive secrets.
 - Previous issue notes: `~/issuebase/mi-nas/`
 - Ready-made runners live in this repo under `scripts/`.
+- On macOS, the bash runner `scripts/enable-xiaomi-nas-ssh.sh` remains the conservative/default path.
+- On Windows or cross-platform work, use the Python runner `scripts/enable-xiaomi-nas-ssh-py.py`; it has been validated on Windows 11 + conda Python 3.13.15.
+
+Runner quick start:
+```sh
+# verified macOS bash runner
+NAS_IP="<NAS_IP>" ./scripts/enable-xiaomi-nas-ssh.sh
+
+# Python runner for cross-platform work
+NAS_IP="<NAS_IP>" python3 ./scripts/enable-xiaomi-nas-ssh-py.py
+
+# Windows examples after Xiaomi Smart Storage login/code verification and NAS visit:
+# py -3 scripts\enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "$env:LOCALAPPDATA\minasCert"
+# P:\Anaconda3\envs\nas-root-py313\python.exe scripts\enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "$env:LOCALAPPDATA\minasCert"
+
+# or specify any non-default app cert directory
+python3 ./scripts/enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "<cert-dir>"
+```
 
 Required inputs:
 - `NAS_IP`: NAS LAN IP. Keep exact value local/redacted in chat.
@@ -150,7 +170,10 @@ NAS-side script to append key to dropbear authorized_keys:
 cat >/tmp/setkey.sh <<'SH'
 #!/bin/sh
 mkdir -p /etc/dropbear
-cat /nas/pool0/<USERNAME>/data/Docker/authorized_keys >> /etc/dropbear/authorized_keys
+touch /etc/dropbear/authorized_keys
+while IFS= read -r line; do
+    grep -qxF "$line" /etc/dropbear/authorized_keys 2>/dev/null || echo "$line" >> /etc/dropbear/authorized_keys
+done < /nas/pool0/<USERNAME>/data/Docker/authorized_keys
 chmod 600 /etc/dropbear/authorized_keys
 echo KEY_OK
 SH
@@ -184,11 +207,14 @@ ssh -i /tmp/nas-root-key -o StrictHostKeyChecking=accept-new root@"$NAS_IP" id
 # Expected: uid=0(root) gid=0(root) ...
 ```
 
-Integrated step-by-step runner:
+Integrated step-by-step runners:
 ```sh
-# Prefer the repo script; prints [step] + OK/WARN/FAIL after each stage.
+# macOS bash runner; prints [step] + OK/WARN/FAIL after each stage.
 NAS_IP='<NAS_IP>' ./scripts/enable-xiaomi-nas-ssh.sh
 # or: ./scripts/enable-xiaomi-nas-ssh.sh '<NAS_IP>'
+
+# Python runner, validated on Windows 11 + conda Python 3.13.15.
+NAS_IP='<NAS_IP>' python3 ./scripts/enable-xiaomi-nas-ssh-py.py
 ```
 Notes for the runner:
 - It must receive the current owner's NAS IP at runtime.

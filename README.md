@@ -15,7 +15,8 @@
 本仓库包含：
 
 - `scripts/watch-xiaomi-nas-app.sh`：监控 App 进程、连接、证书/缓存文件变化，并抓取到 NAS 的加密流量元数据；
-- `scripts/enable-xiaomi-nas-ssh.sh`：一步步执行 SSH 开启流程，每步打印 `OK/WARN/FAIL`；
+- `scripts/enable-xiaomi-nas-ssh.sh`：macOS bash 版，一步步执行 SSH 开启流程，每步打印 `OK/WARN/FAIL`；
+- `scripts/enable-xiaomi-nas-ssh-py.py`：Python 单文件版，已在 Windows 11 + conda Python 3.13 跑通，目标是跨平台支持 Windows/macOS/Linux；
 - `skill/SKILL.md`：给 Pi/Grok 类 coding agent 使用的操作说明；
 - `docs/runbook-redacted.md`：一次已脱敏的跑通记录。
 
@@ -44,13 +45,35 @@
 # 1. 可选：监控 App 登录/访问过程，用于定位证书和连接信息
 NAS_IP='<your-nas-ip>' ./scripts/watch-xiaomi-nas-app.sh
 
-# 2. 执行 SSH 开启流程
+# 2. 执行 SSH 开启流程（已验证的 macOS bash 版）
 NAS_IP='<your-nas-ip>' ./scripts/enable-xiaomi-nas-ssh.sh
+
+# 3. Python 版（已在 Windows 11 + conda Python 3.13 跑通）
+NAS_IP='<your-nas-ip>' python3 ./scripts/enable-xiaomi-nas-ssh-py.py
+
+# Windows 示例：验证码登录小米智能存储并访问 NAS 后，证书目录已见于 %LOCALAPPDATA%\minasCert
+# py -3 ./scripts/enable-xiaomi-nas-ssh-py.py --nas-ip '<your-nas-ip>' --cert-dir "%LOCALAPPDATA%\minasCert"
+# conda Python 3.13 示例：
+# P:\Anaconda3\envs\nas-root-py313\python.exe .\scripts\enable-xiaomi-nas-ssh-py.py --nas-ip '<your-nas-ip>' --cert-dir "%LOCALAPPDATA%\minasCert"
+# 如证书目录不在默认位置，可手动指定：
+# python3 ./scripts/enable-xiaomi-nas-ssh-py.py --nas-ip '<your-nas-ip>' --cert-dir '<cert-dir>'
 ```
+
+### Windows 11 实测环境
+
+已验证环境：
+
+- Windows 11，OpenSSH Client；
+- conda Python `3.13.15`，环境路径示例：`P:\Anaconda3\envs\nas-root-py313`；
+- 小米智能存储安装路径观察为：`C:\Program Files\SmartStorage\小米智能存储.exe`；
+- 通过验证码登录并访问 NAS 后，证书目录观察为：`%LOCALAPPDATA%\minasCert`；
+- Python 版完整跑通：获取 WebDAV 凭据、上传、路径注入、root 回连、写入 dropbear key、启动/验证 SSH、写入本机 SSH config 别名。
+
+注意：Windows 版 App 证书可能要在登录并进入 NAS 文件页后才生成；如果自动发现失败，优先检查 `%LOCALAPPDATA%\minasCert`。
 
 执行脚本会依次验证：
 
-1. 证书目录和 curl；
+1. 证书目录和 curl/Python TLS；
 2. NAS 443/5000/22 端口状态；
 3. WebDAV 凭据；
 4. WebDAV 上传；
@@ -68,8 +91,9 @@ NAS_IP='<your-nas-ip>' ./scripts/enable-xiaomi-nas-ssh.sh
 
 运行过程中会在本机保存：
 
-- WebDAV 凭据：`/tmp/.wdav_creds`，权限 `600`；
-- 临时 SSH 私钥：`/tmp/nas-root-key`；
+- Windows App 证书目录：已见于 `%LOCALAPPDATA%\minasCert`，包含 `*_cert.pem` / `*_private_key.pem` / `*_csr.pem` / `ca_chain.pem`；
+- WebDAV 凭据：macOS bash 默认 `/tmp/.wdav_creds`，Python 版默认系统临时目录下的 `.wdav_creds`，权限 `600`；
+- 临时 SSH 私钥：macOS bash 默认 `/tmp/nas-root-key`，Python 版默认系统临时目录下的 `nas-root-key`；
 - 持久 SSH 私钥：`~/.ssh/id_ed25519_xiaomi_nas`；
 - SSH config 别名：`ssh xiaomi-nas` 或 `ssh minas`。
 

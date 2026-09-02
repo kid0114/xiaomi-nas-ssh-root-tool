@@ -1,3 +1,8 @@
+---
+name: xiaomi-nas-ssh-root
+description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为小米 NAS 开启 SSH/root。当用户要求开启/启用小米 NAS 的 SSH/root、复现“小米 NAS 稳定 SSH”流程、或继续小米 NAS root 过程时使用。仅限用户自己的设备。
+---
+
 # Xiaomi NAS SSH/root enablement via certified WebDAV injection
 
 Use this skill when the user asks to open/enable SSH/root on their local Xiaomi NAS/RP05, or continue the local Xiaomi NAS SSH enablement process. Prefer the integrated scripts in this repo.

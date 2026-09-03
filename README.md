@@ -12,6 +12,11 @@
 - 已能使用“小米智能存储”桌面 App 正常登录并访问 NAS；
 - 需要监控 App 登录/访问过程，定位证书、WebDAV、动态端口等运行态信息。
 
+## 分支说明
+
+- `main`：稳定分支，保留已验证的 macOS bash 版流程；
+- `python-cross-platform`：当前分支，包含 Python 单文件跨平台实现 `scripts/enable-xiaomi-nas-ssh-py.py`，已在 Windows 11 + conda Python 3.13.15 上完整跑通，后续 Windows/Linux/macOS 跨平台改动优先在此分支进行。
+
 本仓库包含：
 
 - `scripts/watch-xiaomi-nas-app.sh`：监控 App 进程、连接、证书/缓存文件变化，并抓取到 NAS 的加密流量元数据；

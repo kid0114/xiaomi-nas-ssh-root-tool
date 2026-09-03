@@ -19,6 +19,8 @@ Runtime/owner-specific context:
 - Derive `WORK_IP` from the active route/interface for that `NAS_IP`; do not assume a fixed subnet.
 - Xiaomi NAS desktop app path on macOS is usually `/Applications/小米智能存储.app`.
 - Cert directory is commonly inside the app bundle: `/Applications/小米智能存储.app/Contents/Resources/extraResources/cert`.
+- Branch/environment split: `main` keeps the conservative macOS bash runner; `python-cross-platform` contains the Python runner for Windows/Linux/macOS work.
+- Python branch validation: Windows 11 + conda Python 3.13.15, Xiaomi Smart Storage at `C:\Program Files\SmartStorage\小米智能存储.exe`, certs observed after code login/NAS visit in `%LOCALAPPDATA%\minasCert`, end-to-end SSH/root flow completed.
 - Cert basename, client cert CN, server TLS CN, WebDAV username/password, tokens, and dynamic ports are per-device/per-login. Discover them for the current owner and keep them redacted in chat.
 - Current app codesign may become invalid because Xiaomi/app workflows add cert resources under `Contents/Resources/extraResources/cert/`; verify but don't treat this alone as failure.
 - Use Homebrew curl `/opt/homebrew/opt/curl/bin/curl`; Apple `/usr/bin/curl` may fail to load EC client keys with LibreSSL unsupported algorithm.
@@ -27,6 +29,8 @@ Runtime/owner-specific context:
 - User may need to log into the Xiaomi NAS app using account/password before monitoring; treat app-derived tokens/WebDAV credentials as sensitive secrets.
 - Previous issue notes: `~/issuebase/mi-nas/`
 - Ready-made runners live in this repo under `scripts/`.
+- On `main`, use `scripts/enable-xiaomi-nas-ssh.sh`.
+- For Windows/cross-platform work, switch to branch `python-cross-platform` and use `scripts/enable-xiaomi-nas-ssh-py.py`; if Windows cert auto-discovery fails, pass `--cert-dir "%LOCALAPPDATA%\minasCert"`.
 
 Required inputs:
 - `NAS_IP`: NAS LAN IP. Keep exact value local/redacted in chat.

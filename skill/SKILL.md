@@ -1,6 +1,6 @@
 ---
 name: xiaomi-nas-ssh-root
-description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为小米 NAS 开启 SSH/root。当用户要求开启/启用小米 NAS 的 SSH/root、复现“小米 NAS 稳定 SSH”流程、或继续小米 NAS root 过程时使用。仅限用户自己的设备。
+description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为用户自己的小米 NAS 开启或恢复 SSH/root，并在 Windows/Python 环境安装和验证普通整机重启后的 SSH 持久化。也用于复现“小米 NAS 稳定 SSH”流程或继续该设备的 root 调查。
 ---
 
 # Xiaomi NAS SSH/root enablement via certified WebDAV injection
@@ -31,6 +31,7 @@ Runtime/owner-specific context:
 - Ready-made runners live in this repo under `scripts/`.
 - On macOS, the bash runner `scripts/enable-xiaomi-nas-ssh.sh` remains the conservative/default path.
 - On Windows or cross-platform work, use the Python runner `scripts/enable-xiaomi-nas-ssh-py.py`; it has been validated on Windows 11 + conda Python 3.13.15.
+- When root SSH already works and the user only wants ordinary-reboot persistence, do not rerun certificate/WebDAV enablement. With authorization to change the NAS, run `scripts/install-ssh-persistence.py`; it defaults to the `xiaomi-nas` SSH alias and accepts an explicit root SSH target and identity file.
 
 Runner quick start:
 ```sh
@@ -43,6 +44,10 @@ NAS_IP="<NAS_IP>" python3 ./scripts/enable-xiaomi-nas-ssh-py.py
 # Windows examples after Xiaomi Smart Storage login/code verification and NAS visit:
 # py -3 scripts\enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "$env:LOCALAPPDATA\minasCert"
 # P:\Anaconda3\envs\nas-root-py313\python.exe scripts\enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "$env:LOCALAPPDATA\minasCert"
+
+# Windows/Python persistence-only path after root SSH is already available
+# P:\Anaconda3\envs\nas-root-py313\python.exe scripts\install-ssh-persistence.py
+# P:\Anaconda3\envs\nas-root-py313\python.exe scripts\install-ssh-persistence.py root@"<NAS_IP>" -i "$env:USERPROFILE\.ssh\id_ed25519_xiaomi_nas"
 
 # or specify any non-default app cert directory
 python3 ./scripts/enable-xiaomi-nas-ssh-py.py --nas-ip "<NAS_IP>" --cert-dir "<cert-dir>"
@@ -192,13 +197,11 @@ SH
 # upload to /pool0/data/Docker/setshell.sh, trigger via injection, expect SHELL_OK.
 ```
 
-Enable dropbear:
-```sh
-# Command payload executes:
-# systemctl enable dropbear.socket && systemctl start dropbear.socket && mitee_tool rpmb set ssh_en true
-# It is wrapped in systemd-run --unit=enable_ssh /bin/sh -c '...'
-# Use max-time because systemd-run should return quickly.
-```
+Enable Dropbear for the current boot with `systemctl start dropbear.socket`. Do not treat
+`mitee_tool rpmb set ssh_en true` as successful: the command requires a second signed
+challenge response and a plain non-interactive call fails verification. The vendor boot
+check can therefore stop Dropbear after reboot. Once root SSH is available, use the
+Python persistence installer below instead of rerunning certificate/WebDAV enablement.
 
 Verify:
 ```sh
@@ -206,6 +209,19 @@ nc -vz -G 2 "$NAS_IP" 22
 ssh -i /tmp/nas-root-key -o StrictHostKeyChecking=accept-new root@"$NAS_IP" id
 # Expected: uid=0(root) gid=0(root) ...
 ```
+
+Post-enable Windows/Python persistence installer:
+```powershell
+P:\Anaconda3\envs\nas-root-py313\python.exe .\scripts\install-ssh-persistence.py
+# Or without a configured alias:
+P:\Anaconda3\envs\nas-root-py313\python.exe .\scripts\install-ssh-persistence.py `
+  root@'<NAS_IP>' -i "$env:USERPROFILE\.ssh\id_ed25519_xiaomi_nas"
+```
+Run this only with authorization to modify the NAS. It atomically installs the validated
+`98.ssh-persistence` pool hook, verifies its `/data/etc/upper` copy, and keeps current SSH
+active. `PERSISTENCE_READY` proves installation and current runtime health, not reboot
+persistence. The installer never reboots the NAS; require separate user authorization for
+a whole-device reboot and validate a new boot ID, old-key login, and current-boot journal.
 
 Integrated step-by-step runners:
 ```sh
@@ -222,6 +238,7 @@ Notes for the runner:
 - It stores root SSH key at `/tmp/nas-root-key`; never print/delete the private key.
 - It redacts `NAS_IP`/`WORK_IP` from its command-capture output.
 - It verifies, in order: certs, ports, WebDAV credentials, WebDAV PUT, listener, sleep injection, root id, key upload, `authorized_keys`, root shell, dropbear, SSH root id, local SSH config alias.
+- The existing full Python runner proves current-boot SSH only. Run the separate persistence installer after SSH verification when ordinary-reboot persistence is requested and authorized.
 - It copies the root key to `~/.ssh/id_ed25519_xiaomi_nas` and writes/updates this local SSH config block:
   ```sshconfig
   Host xiaomi-nas minas

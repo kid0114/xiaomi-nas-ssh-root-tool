@@ -22,6 +22,7 @@
 - `scripts/watch-xiaomi-nas-app.sh`：监控 App 进程、连接、证书/缓存文件变化，并抓取到 NAS 的加密流量元数据；
 - `scripts/enable-xiaomi-nas-ssh.sh`：macOS bash 版，一步步执行 SSH 开启流程，每步打印 `OK/WARN/FAIL`；
 - `scripts/enable-xiaomi-nas-ssh-py.py`：Python 单文件版，已在 Windows 11 + conda Python 3.13 跑通，目标是跨平台支持 Windows/macOS/Linux；
+- `scripts/install-ssh-persistence.py`：Windows/Python 独立固化脚本，在 root SSH 已打开时安装并验证普通重启恢复 hook；
 - `skill/SKILL.md`：给 Pi/Grok 类 coding agent 使用的操作说明；
 - `docs/runbook-redacted.md`：一次已脱敏的跑通记录。
 
@@ -64,6 +65,25 @@ NAS_IP='<your-nas-ip>' python3 ./scripts/enable-xiaomi-nas-ssh-py.py
 # python3 ./scripts/enable-xiaomi-nas-ssh-py.py --nas-ip '<your-nas-ip>' --cert-dir '<cert-dir>'
 ```
 
+### root SSH 已打开后单独固化
+
+如果当前已经能以 root SSH 登录 NAS，不需要重新执行证书/WebDAV 开 root 流程：
+
+```powershell
+# 默认使用 SSH config 中的 xiaomi-nas 别名
+P:\Anaconda3\envs\nas-root-py313\python.exe .\scripts\install-ssh-persistence.py
+
+# 没有别名时显式指定目标和 NAS 私钥
+P:\Anaconda3\envs\nas-root-py313\python.exe .\scripts\install-ssh-persistence.py `
+  root@'<NAS_IP>' -i "$env:USERPROFILE\.ssh\id_ed25519_xiaomi_nas"
+```
+
+该脚本会原子安装 `/etc/syshotplug/pool/98.ssh-persistence`，验证其
+`/data/etc/upper` 持久副本，并保持当前 boot 的 `dropbear.socket` 为 active。
+它不读取小米 App 证书、不使用 WebDAV，也不会自动重启 NAS。脚本成功只证明
+hook 已安装；仍需用户明确同意后进行一次整机重启，以新 boot ID、旧密钥登录
+和当前启动日志完成端到端验收。
+
 ### Windows 11 实测环境
 
 已验证环境：
@@ -73,6 +93,7 @@ NAS_IP='<your-nas-ip>' python3 ./scripts/enable-xiaomi-nas-ssh-py.py
 - 小米智能存储安装路径观察为：`C:\Program Files\SmartStorage\小米智能存储.exe`；
 - 通过验证码登录并访问 NAS 后，证书目录观察为：`%LOCALAPPDATA%\minasCert`；
 - Python 版完整跑通：获取 WebDAV 凭据、上传、路径注入、root 回连、写入 dropbear key、启动/验证 SSH、写入本机 SSH config 别名。
+- 独立 Python 固化脚本已从 Windows 11 通过 OpenSSH 实际执行到 NAS，并验证 hook、upper-layer 副本和当前 Dropbear 状态。
 
 注意：Windows 版 App 证书可能要在登录并进入 NAS 文件页后才生成；如果自动发现失败，优先检查 `%LOCALAPPDATA%\minasCert`。
 

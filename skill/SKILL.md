@@ -1,6 +1,6 @@
 ---
 name: xiaomi-nas-ssh-root
-description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为小米 NAS 开启 SSH/root。当用户要求开启/启用小米 NAS 的 SSH/root、复现“小米 NAS 稳定 SSH”流程、或继续小米 NAS root 过程时使用。仅限用户自己的设备。
+description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为用户自己的小米 NAS 开启或恢复 SSH/root，并部署、诊断和验证普通整机重启后的 SSH 持久化。也用于复现“小米 NAS 稳定 SSH”流程或继续该设备的 root 调查。
 ---
 
 # Xiaomi NAS SSH/root enablement via certified WebDAV injection
@@ -12,7 +12,7 @@ Safety/authorization:
 - Treat LAN IPs, app account/password, WebDAV password, tokens, cert private keys, and SSH private keys as sensitive. Do not expose exact IPs or secrets in chat unless the user explicitly asks.
 - Never exfiltrate or print private keys except paths and fingerprints. Do not paste private key content into chat.
 - Prefer dry-run/verification steps before state-changing injection.
-- Record conclusions under `~/issuebase/mi-nas/` when troubleshooting, but redact exact IPs in user-facing summaries.
+- When working in this repo's `persistence-research` branch, record project-specific investigation conclusions in `research/analyst.md`, not `~/issuebase/`; keep raw device identifiers out of that analysis file.
 
 Runtime/owner-specific context:
 - Always ask for or detect the current owner's `NAS_IP` at runtime. Do not hard-code a previous user's/device's IP into commands, scripts, pcap filenames, summaries, or chat replies.
@@ -27,10 +27,12 @@ Runtime/owner-specific context:
 - Correct LuCI API path for pool info is `/cgi-bin/luci/filemgr/get_pool_info` (not `/cgi-bin/luci/admin/filemgr/get_pool_info`, which can return 403).
 - Store WebDAV credentials as `username:password` in `/tmp/.wdav_creds` with mode 600. Never print the password in chat.
 - User may need to log into the Xiaomi NAS app using account/password before monitoring; treat app-derived tokens/WebDAV credentials as sensitive secrets.
-- Previous issue notes: `~/issuebase/mi-nas/`
+- Historical issue notes may exist under `~/issuebase/mi-nas/`, but new persistence research for this project belongs in `research/analyst.md`.
 - Ready-made runners live in this repo under `scripts/`.
 - On `main`, use `scripts/enable-xiaomi-nas-ssh.sh`.
+- When root SSH already works and the user only wants ordinary-reboot persistence, do not rerun the certificate/WebDAV enablement flow. With authorization to change the NAS, run `scripts/install-ssh-persistence.sh`; it defaults to the `xiaomi-nas` SSH alias and also accepts a root SSH target as its first argument.
 - For Windows/cross-platform work, switch to branch `python-cross-platform` and use `scripts/enable-xiaomi-nas-ssh-py.py`; if Windows cert auto-discovery fails, pass `--cert-dir "%LOCALAPPDATA%\minasCert"`.
+- For reboot persistence, boot-order diagnosis, recovery after port 22 closes, and rollback, read [references/reboot-persistence.md](references/reboot-persistence.md) before changing the NAS.
 
 Required inputs:
 - `NAS_IP`: NAS LAN IP. Keep exact value local/redacted in chat.
@@ -40,7 +42,7 @@ Required inputs:
   - `<UID>_<SERIAL>_private_key.pem`
   - `<UID>_<SERIAL>_csr.pem`
   - `ca_chain.pem`
-- `USERNAME`: NAS API/WebDAV response username, also used in `/nas/pool0/<USERNAME>/data/Docker/...`.
+- `USERNAME`: NAS API/WebDAV response username. A WebDAV object at `/pool0/data/Docker/...` is visible on the NAS at `/home/<USERNAME>/pool0/data/Docker/...` on the validated firmware; verify this mapping instead of assuming `/nas/pool0/<USERNAME>/...`.
 - `CREDS`: WebDAV `username:password` from API response.
 - `WORK_IP`: workstation LAN IP reachable by NAS, e.g. `hostname -I` or `ipconfig getifaddr en0`.
 
@@ -149,13 +151,12 @@ curl -s -u "$CREDS" $CERT_ARGS_WD -T /tmp/nas-root-key.pub \
   "https://$CN:5000/pool0/data/Docker/authorized_keys" -o /dev/null
 ```
 
-NAS-side script to append key to dropbear authorized_keys:
+NAS-side script to install the key as dropbear authorized_keys:
 ```sh
 cat >/tmp/setkey.sh <<'SH'
 #!/bin/sh
-mkdir -p /etc/dropbear
-cat /nas/pool0/<USERNAME>/data/Docker/authorized_keys >> /etc/dropbear/authorized_keys
-chmod 600 /etc/dropbear/authorized_keys
+install -d -m 700 /etc/dropbear
+install -m 600 /home/<USERNAME>/pool0/data/Docker/authorized_keys /etc/dropbear/authorized_keys
 echo KEY_OK
 SH
 # replace <USERNAME>, upload to /pool0/data/Docker/setkey.sh, then trigger via injection and expect KEY_OK.
@@ -173,13 +174,12 @@ SH
 # upload to /pool0/data/Docker/setshell.sh, trigger via injection, expect SHELL_OK.
 ```
 
-Enable dropbear:
-```sh
-# Command payload executes:
-# systemctl enable dropbear.socket && systemctl start dropbear.socket && mitee_tool rpmb set ssh_en true
-# It is wrapped in systemd-run --unit=enable_ssh /bin/sh -c '...'
-# Use max-time because systemd-run should return quickly.
-```
+Enable dropbear for the current boot with `systemctl start dropbear.socket`. Do not report
+`mitee_tool rpmb set ssh_en true` as successful: `rpmb set` prints a challenge, reads a
+second response from stdin, and rejects a plain non-interactive call with
+`rpmb set verify failed`. The vendor `boot_check.sh` will stop Dropbear after reboot when
+`rpmb get ssh_en` is not exactly `true`. Install the validated pool-mounted hook described
+in [references/reboot-persistence.md](references/reboot-persistence.md).
 
 Verify:
 ```sh
@@ -187,6 +187,20 @@ nc -vz -G 2 "$NAS_IP" 22
 ssh -i /tmp/nas-root-key -o StrictHostKeyChecking=accept-new root@"$NAS_IP" id
 # Expected: uid=0(root) gid=0(root) ...
 ```
+
+Post-enable persistence installer:
+```sh
+# Use this narrow path when root SSH is already available.
+./scripts/install-ssh-persistence.sh
+# Or without a configured alias:
+./scripts/install-ssh-persistence.sh root@'<NAS_IP>'
+```
+The installer atomically writes the validated `98.ssh-persistence` pool hook, verifies its
+`/data/etc/upper` copy, and keeps `dropbear.socket` active for the current boot. Do not run
+it without authorization to modify the NAS. Its `PERSISTENCE_READY` result proves the hook
+is installed and current SSH is active; only a later user-authorized whole-device reboot,
+new boot ID, old-key login, and current-boot journal ordering prove reboot persistence.
+The installer never reboots the NAS.
 
 Integrated step-by-step runner:
 ```sh
@@ -199,7 +213,8 @@ Notes for the runner:
 - It stores WebDAV credentials in `/tmp/.wdav_creds` mode 600 and does not print the password.
 - It stores root SSH key at `/tmp/nas-root-key`; never print/delete the private key.
 - It redacts `NAS_IP`/`WORK_IP` from its command-capture output.
-- It verifies, in order: certs, ports, WebDAV credentials, WebDAV PUT, listener, sleep injection, root id, key upload, `authorized_keys`, root shell, dropbear, SSH root id, local SSH config alias.
+- It verifies, in order: certs, ports, WebDAV credentials, WebDAV PUT, listener, sleep injection, root id, key upload, `authorized_keys`, root shell, persistent pool hook in both `/etc` and `/data/etc/upper`, dropbear, SSH root id, local SSH config alias.
+- Runner success proves current-boot SSH and installation of the persistence hook. Only a subsequent whole-device reboot with a new boot ID and post-boot journal evidence proves reboot persistence.
 - It copies the root key to `~/.ssh/id_ed25519_xiaomi_nas` and writes/updates this local SSH config block:
   ```sshconfig
   Host xiaomi-nas minas

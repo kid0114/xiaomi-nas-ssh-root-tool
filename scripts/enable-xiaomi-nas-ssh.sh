@@ -175,9 +175,8 @@ curl_cert_5000 -u "$(cat "$CREDS_FILE")" -X MKCOL "https://$SERVER_CN:5000/pool0
 curl_cert_5000 -u "$(cat "$CREDS_FILE")" -T "$KEY_PATH.pub" "https://$SERVER_CN:5000/pool0/data/Docker/authorized_keys" -o /dev/null
 cat > /tmp/setkey.sh <<SH
 #!/bin/sh
-mkdir -p /etc/dropbear
-cat /nas/pool0/$USERNAME/data/Docker/authorized_keys >> /etc/dropbear/authorized_keys
-chmod 600 /etc/dropbear/authorized_keys
+install -d -m 700 /etc/dropbear
+install -m 600 /home/$USERNAME/pool0/data/Docker/authorized_keys /etc/dropbear/authorized_keys
 echo KEY_OK
 SH
 cat > /tmp/setshell.sh <<'SH'
@@ -187,28 +186,51 @@ cp /etc/passwd /runtime/passwd.bak-pre-ssh 2>/dev/null || cp /etc/passwd /tmp/pa
 usermod -s /bin/sh root
 echo SHELL_OK
 SH
+cat > /tmp/setpersist.sh <<'SH'
+#!/bin/sh
+set -eu
+HOOK=/etc/syshotplug/pool/98.ssh-persistence
+mkdir -p /etc/syshotplug/pool
+cat > "$HOOK" <<'EOF'
+#!/bin/sh
+
+[ "mounted" = "$ACTION" ] || exit 0
+systemctl start dropbear.socket
+logger -t ssh.persistence "dropbear.socket started after pool mount"
+EOF
+chmod 755 "$HOOK"
+test -x /data/etc/upper/syshotplug/pool/98.ssh-persistence
+echo PERSIST_HOOK_OK
+SH
 curl_cert_5000 -u "$(cat "$CREDS_FILE")" -T /tmp/setkey.sh "https://$SERVER_CN:5000/pool0/data/Docker/setkey.sh" -o /dev/null
 curl_cert_5000 -u "$(cat "$CREDS_FILE")" -T /tmp/setshell.sh "https://$SERVER_CN:5000/pool0/data/Docker/setshell.sh" -o /dev/null
+curl_cert_5000 -u "$(cat "$CREDS_FILE")" -T /tmp/setpersist.sh "https://$SERVER_CN:5000/pool0/data/Docker/setpersist.sh" -o /dev/null
 ok "public key and scripts uploaded"
 
 step "写入 dropbear authorized_keys"
-SETKEY_EXPR="$(remote_path_expr "/nas/pool0/$USERNAME/data/Docker/setkey.sh")"
+SETKEY_EXPR="$(remote_path_expr "/home/$USERNAME/pool0/data/Docker/setkey.sh")"
 OUT="$(inject_capture "sh $SETKEY_EXPR")"
 printf '%s\n' "$OUT"
 printf '%s' "$OUT" | grep -q 'KEY_OK' || fail "KEY_OK not observed"
 ok "authorized_keys installed"
 
 step "修改 root shell 为 /bin/sh"
-SETSHELL_EXPR="$(remote_path_expr "/nas/pool0/$USERNAME/data/Docker/setshell.sh")"
+SETSHELL_EXPR="$(remote_path_expr "/home/$USERNAME/pool0/data/Docker/setshell.sh")"
 OUT="$(inject_capture "sh $SETSHELL_EXPR")"
 printf '%s\n' "$OUT"
 printf '%s' "$OUT" | grep -q 'SHELL_OK' || fail "SHELL_OK not observed"
 ok "root shell updated; /etc/passwd backup created on NAS"
 
-step "启用 dropbear SSH 服务"
-OUT="$(inject_capture "systemd-run --unit=enable_ssh --property=Type=oneshot /bin/sh -c 'systemctl enable dropbear.socket && systemctl start dropbear.socket && mitee_tool rpmb set ssh_en true; echo SSH_EN_OK'")"
+step "安装普通重启 SSH 持久化 hook"
+SETPERSIST_EXPR="$(remote_path_expr "/home/$USERNAME/pool0/data/Docker/setpersist.sh")"
+OUT="$(inject_capture "sh $SETPERSIST_EXPR")"
 printf '%s\n' "$OUT"
-sleep 3
+printf '%s' "$OUT" | grep -q 'PERSIST_HOOK_OK' || fail "persistence hook was not installed in /data/etc/upper"
+ok "pool-mounted hook installed in persistent /etc overlay"
+
+step "启用 dropbear SSH 服务"
+inject "systemctl start dropbear.socket"
+sleep 2
 if nc -z -G 3 "$NAS_IP" 22 >/dev/null 2>&1; then ok "SSH port is open"; else warn "SSH port not open yet; trying direct systemctl start"; inject "systemctl start dropbear.socket"; sleep 2; fi
 nc -z -G 3 "$NAS_IP" 22 >/dev/null 2>&1 || fail "SSH port still not open"
 
@@ -217,6 +239,13 @@ SSH_OUT="$(ssh -i "$KEY_PATH" -o BatchMode=yes -o StrictHostKeyChecking=accept-n
 printf '%s\n' "$SSH_OUT"
 printf '%s' "$SSH_OUT" | grep -q 'uid=0(root)' || fail "SSH did not return root id"
 ok "SSH root is available"
+
+step "验证持久化文件"
+PERSIST_OUT="$(ssh -i "$KEY_PATH" -o BatchMode=yes -o ConnectTimeout=8 root@"$NAS_IP" \
+  'test -x /etc/syshotplug/pool/98.ssh-persistence && test -x /data/etc/upper/syshotplug/pool/98.ssh-persistence && echo PERSIST_FILES_OK' 2>&1 | redact)" || { printf '%s\n' "$PERSIST_OUT"; fail "persistent hook verification failed"; }
+printf '%s\n' "$PERSIST_OUT"
+printf '%s' "$PERSIST_OUT" | grep -q 'PERSIST_FILES_OK' || fail "persistent hook files not observed"
+ok "reboot hook is present; whole-device reboot is still required for end-to-end verification"
 
 step "写入本机 SSH config 别名"
 mkdir -p "$HOME/.ssh"
@@ -262,3 +291,4 @@ ok "SSH alias ready: ssh xiaomi-nas"
 step "完成"
 ok "Keep private key: $LOCAL_KEY"
 ok "Keep WebDAV creds local: $CREDS_FILE"
+warn "RPMB ssh_en is not set; reboot persistence relies on /etc/syshotplug/pool/98.ssh-persistence"

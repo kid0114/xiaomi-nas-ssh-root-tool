@@ -15,12 +15,14 @@
 ## 分支说明
 
 - `main`：稳定分支，保留已验证的 macOS bash 版流程；
+- `persistence-research`：macOS bash 版普通重启持久化研究与实现；
 - `python-cross-platform`：Python 跨平台分支，包含 `scripts/enable-xiaomi-nas-ssh-py.py`，已在 Windows 11 + conda Python 3.13.15 上完整跑通，后续 Windows/Linux/macOS 跨平台改动优先在此分支进行。
 
 本仓库包含：
 
 - `scripts/watch-xiaomi-nas-app.sh`：监控 App 进程、连接、证书/缓存文件变化，并抓取到 NAS 的加密流量元数据；
 - `scripts/enable-xiaomi-nas-ssh.sh`：一步步执行 SSH 开启流程，每步打印 `OK/WARN/FAIL`；
+- `scripts/install-ssh-persistence.sh`：macOS bash 版独立固化脚本，在 root SSH 已打开时安装并验证普通重启恢复 hook；
 - `skill/SKILL.md`：给 Pi/Grok 类 coding agent 使用的操作说明；
 - `docs/runbook-redacted.md`：一次已脱敏的跑通记录。
 
@@ -40,7 +42,7 @@
 4. 一体化脚本读取 App 生成的客户端证书，通过正确 LuCI API 获取 WebDAV 凭据。
 5. 脚本用 WebDAV 验证上传能力，然后通过 WebDAV 路径注入做低风险测试。
 6. 确认 NAS 侧命令执行身份为 root 后，上传 SSH 公钥和辅助脚本。
-7. 脚本写入 dropbear `authorized_keys`、调整 root shell、启动 dropbear，并验证 root SSH。
+7. 脚本写入 dropbear `authorized_keys`、调整 root shell、安装 pool-mounted 持久化 hook、启动 dropbear，并验证 root SSH。
 8. 最后把 SSH 私钥复制到本机 `~/.ssh/`，写入 `ssh xiaomi-nas` / `ssh minas` 别名。
 
 ## 快速使用
@@ -51,7 +53,17 @@ NAS_IP='<your-nas-ip>' ./scripts/watch-xiaomi-nas-app.sh
 
 # 2. 执行 SSH 开启流程
 NAS_IP='<your-nas-ip>' ./scripts/enable-xiaomi-nas-ssh.sh
+
+# 3. 如果 root SSH 已经打开，仅安装普通重启持久化
+./scripts/install-ssh-persistence.sh
+# 没有 xiaomi-nas SSH 别名时：
+./scripts/install-ssh-persistence.sh root@'<your-nas-ip>'
 ```
+
+独立固化脚本会在 NAS 上安装 `/etc/syshotplug/pool/98.ssh-persistence`，
+验证其 `/data/etc/upper` 持久副本，并保持当前 boot 的 `dropbear.socket`
+为 active。它不会自动重启 NAS；脚本成功只证明 hook 已安装，仍需经用户明确
+同意后进行一次整机重启，以新 boot ID、旧密钥登录和本次启动日志完成验收。
 
 执行脚本会依次验证：
 
@@ -65,9 +77,10 @@ NAS_IP='<your-nas-ip>' ./scripts/enable-xiaomi-nas-ssh.sh
 8. SSH key 上传；
 9. `authorized_keys` 写入；
 10. root shell 修改；
-11. dropbear/SSH 启动；
-12. root SSH 登录验证；
-13. 写入本机 SSH config 别名。
+11. 普通重启持久化 hook 安装与 upper-layer 校验；
+12. dropbear/SSH 启动；
+13. root SSH 登录验证；
+14. 写入本机 SSH config 别名。
 
 ## 本地生成/保存的敏感文件
 

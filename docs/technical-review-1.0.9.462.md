@@ -82,11 +82,11 @@ set sambashare.u<uid>_2.comment=
 
 拿到 `/etc` 的 root 写入后还差"执行"。最可靠的触发器是 `/etc/ld.so.preload`：设备上 cron 每分钟都有 root 任务（监控采集等），任何动态链接进程启动都会加载我们的 .so，构造函数即以 root 执行。
 
-触发 .so 用 keystone-engine **现场汇编**（无预置二进制、可随时重放）：最小 aarch64 ELF（DT_INIT 指向一段裸指令），逻辑是 fork + `execve("/bin/sh", ["/bin/sh", "/etc/.rootpwn.sh"], 0)`，父进程立即返回不干扰宿主。payload 脚本先清掉 preload 自身（防风暴）、装公钥、起服务。
+触发 .so 最初用 keystone-engine **现场汇编**：最小 aarch64 ELF（DT_INIT 指向一段裸指令），逻辑是 fork + `execve("/bin/sh", ["/bin/sh", "/etc/.rootpwn.sh"], 0)`，父进程立即返回不干扰宿主。payload 脚本先清掉 preload 自身（防风暴）、装公钥、起服务。**现行脚本已改为内置固定机器码**（该段代码无可变输入，汇编结果恒定），生成的 .so 与现场汇编版逐字节一致，因此运行时零第三方依赖；汇编源码保留在脚本注释中供审计/重新生成。
 
 **说明**：本文描述的获取方式不做重启持久化（无挂载钩子、无开机自启）——设备重启后 **socat 辅助 shell 与 dropbear 服务会消失**，需要时重新执行获取流程。一键脚本在成功与失败路径上都会执行清理（解除 preload 布防、移除注入共享与临时目录、清除注入的 samba 系统账号行）。**有意保留的部分**：SSH 公钥（`/etc/dropbear/authorized_keys` 与 `/home/rootx/.ssh/authorized_keys` 两处）及 passwd 中 root home 指向 `/home/rootx` 的修改——密钥认证通道重启后仍可用；如需彻底清除，删除这两个文件并将 home 改回 `/root`。是否及如何做持久化，属于使用者自己的决定，不在本文范围内。
 
-坑：汇编字符串里 `\0` 的转义层数——Python 源码需 `"\\0"` 传给 keystone 才是正确的汇编文本，写成真实 NUL 会报 `KS_ERR_ASM_SYMBOL_MISSING`。
+历史坑（现场汇编时期）：汇编字符串里 `\0` 的转义层数——Python 源码需 `"\\0"` 传给 keystone 才是正确的汇编文本，写成真实 NUL 会报 `KS_ERR_ASM_SYMBOL_MISSING`。内置字节版不再受此影响。
 
 ### SSH 的曲折与真相
 

@@ -5,12 +5,14 @@
 ## 前置条件
 
 1. 本机已安装「小米智能存储」桌面端并**登录过目标 NAS**（客户端证书由 App 生成，脚本自动查找）
-2. Python 3.9+，安装依赖：`pip install -r requirements.txt`（keystone-engine，现场汇编 aarch64 触发器）
+2. Python 3.9+（**仅标准库**：触发器机器码为固定字节、已内置，无需 pip/Conda/Homebrew）。
+   先跑本地预检（不联系 NAS）：`python3 scripts/xiaomi-nas-root.py --preflight`
 
 ## 用法
 
-```powershell
-python xiaomi-nas-root.py <NAS_IP>
+```sh
+python3 scripts/xiaomi-nas-root.py --preflight        # 本机前置检查，不联系 NAS
+python3 scripts/xiaomi-nas-root.py <NAS_IP>
 # 可选参数:
 #   --uid <米家数字UID>         指定米家数字 UID（默认从证书解析）
 #   --cert-dir <路径>          指定证书目录（默认自动搜索 minasCert）
@@ -29,7 +31,7 @@ python xiaomi-nas-root.py <NAS_IP>
 |---|---|---|
 | ① | mTLS 证书 → get_pool_info | 拿 WebDAV 凭据（端口 5000） |
 | ② | MKCOL 换行目录 + add_samba_account | `smb_mgr.sh` uci heredoc 注入 → `force user=root` 的 `/etc` SMB 共享 |
-| ③ | ld.so.preload + 触发 .so | keystone 汇编的 aarch64 .so，cron 每分钟 root 任务触发 → socat root shell + dropbear |
+| ③ | ld.so.preload + 触发 .so | 内置固定 aarch64 机器码的 .so，cron 每分钟 root 任务触发 → socat root shell + dropbear |
 
 ## 产物
 
@@ -47,10 +49,10 @@ python xiaomi-nas-root.py <NAS_IP>
 - 仅用于**自有设备**
 - 步骤②会临时创建带注入的 samba 共享（`u<uid>_2`），脚本自动清理（见上节"清理行为"）
 - 已知坑：`add_samba_account` 可能返回 2502（restart 失败）——uci 已写入，脚本自动走 `set_samba_account` 修复路径，属正常现象
-- SMB 写入依赖 Windows（net use）或 POSIX（mount cifs，需 cifs-utils）；均不可用时脚本报错并给出手动挂载指引
+- SMB 写入在 macOS 用系统自带 `mount_smbfs`；无需 cifs-utils/Conda/Homebrew
 
-## 部署/运维硬规矩（真机踩坑提炼）
+## 已知坑
 
-1. **文本/二进制分流**：任何 CRLF 修复（`tr -d '\r'`）绝不允许作用于 png/ico/jpg/woff/webp 等二进制——会删掉文件内 0x0D 字节导致损坏（图标空白事故根因）
-2. **改 album DB 后重启 albumd**；member_id 必须相册内唯一（用 shot_time 微秒级），否则 `BUG: member id tree same key` 导致整体加载中止
-3. socat 会话内 systemctl restart 会 D-Bus 死锁——用 cron 一次性任务执行 systemctl 类操作
+1. socat 会话内 systemctl restart 会 D-Bus 死锁——用 cron 一次性任务执行 systemctl 类操作
+2. 若 2323 未开但 `/etc/.rootpwn.log` 有 `uid=0` 记录，说明 cron 已触发、仅设备缺 socat；
+   公钥已注入，可走 SSH 认证通道，不要重复布防 preload

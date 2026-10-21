@@ -2,12 +2,13 @@
 
 ## Proven scope, not a one-click guarantee
 
-This reference records the recovery method observed on one owner's RP05. macOS
-Python 3.11 with Keystone 0.9.2 was used. Windows/Linux support is not implemented or
-accepted for this branch. Root job execution, manual restoration of a usable SSH
-shell, and a subsequent ordinary-reboot test were observed. A later clean script
-attempt did not establish its socat listener; unattended end-to-end repeatability
-must not be claimed.
+This reference records the recovery method observed on one owner's RP05. The runner
+needs only Python 3.9+ from the standard library; no Conda, Homebrew, venv, or pip
+packages are required. Windows/Linux support is not implemented or accepted for
+this branch. Root job execution, manual restoration of a usable SSH shell, and a
+subsequent ordinary-reboot test were observed. A later clean script attempt did
+not establish its socat listener; unattended end-to-end repeatability must not be
+claimed from the successful manual chain.
 
 Sources:
 
@@ -56,66 +57,41 @@ Correct API path: `/cgi-bin/luci/filemgr/get_pool_info`. The Python runner probe
 server-name role suffixes rather than assuming the client certificate CN is the
 server name. Do not disable certificate verification to bypass a mismatch.
 
-## Dedicated Conda environment
+## Workstation environment
 
-Use a dedicated environment, never `base`, venv, or user-site installs. Reuse the
-environment if already present; create it only when missing:
-
-```sh
-conda create -n minas-root python=3.11 -y
-```
+Any Python 3.9+ works: the macOS system Python, python.org, Xcode Command Line
+Tools, Homebrew, or Conda are all acceptable sources. The runner itself uses only
+the Python standard library. The aarch64 trigger machine code is embedded as fixed
+bytes (it has no variable inputs), so no assembler package is needed.
 
 With the repository root as the working directory:
 
 ```sh
-conda run -n minas-root python -m pip install -r scripts/requirements-1.0.9.462.txt
-conda run -n minas-root python -c 'import sys, keystone; print(sys.version.split()[0], keystone.__version__)'
-conda run -n minas-root python scripts/xiaomi-nas-root.py --help
+python3 scripts/xiaomi-nas-root.py --preflight
+python3 scripts/xiaomi-nas-root.py --help
 ```
 
-`--help` is a local CLI check, not permission to start recovery. The script has no
-`--dry-run`; do not invent one. Its documented options are `--uid`, `--cert-dir`, and
-`--shell-port` in addition to the positional NAS address.
-
-On the tested Apple-silicon installation, the pip package lacked a loadable native
-Keystone library. The successful repair used Homebrew's arm64 Keystone dylib inside
-the dedicated environment's `site-packages/keystone/`, not in `base`. Only if that
-same missing-library error occurs and a matching Homebrew library is available:
-
-```sh
-KEYSTONE_PACKAGE="$(conda run -n minas-root python -c 'import importlib.util, pathlib; print(pathlib.Path(importlib.util.find_spec("keystone").origin).parent)')"
-cp "$(brew --prefix keystone)/lib/libkeystone.0.dylib" "$KEYSTONE_PACKAGE/libkeystone.dylib"
-conda run -n minas-root python -c 'import keystone; print(keystone.__version__)'
-```
-
-Do not apply an arm64 dylib fix to an Intel/Rosetta environment. Other macOS
-architecture combinations have not been accepted by this recovery record.
+`--preflight` is local-only: it checks the Python version, macOS
+`ssh-keygen`/`/sbin/mount_smbfs`, builds and validates the embedded trigger ELF,
+and locates the desktop-app certificate directory. It never contacts the NAS.
+`--help` is a local CLI check, not permission to start recovery. There is no
+`--dry-run` against a live NAS; do not invent one. Documented options are
+`--uid`, `--cert-dir`, `--shell-port`, and `--preflight`, plus the positional NAS
+address (required unless `--preflight` is used).
 
 ## Stop conditions before any mutation
 
 1. Verify root SSH first. If a normal remote `id -u` already returns `0`, do not
    rerun the exploit to refresh aliases, inspect files, or maintain persistence.
-2. The reference runner targets account/share ID `2` and UCI sections
-   `sambashare.u<uid>_2` / `sambauser.u<uid>_2`. Its repair and cleanup can overwrite
-   or delete an existing legitimate share. Establish that this slot is unused and
-   preserve the existing SMB configuration through an available authorized channel.
-   If that cannot be established, **stop before running the tool**; no automatic
-   collision-safe path is claimed here. Never label response `2511` harmless without
-   proving which share exists. Response `2502` alone also does not prove ownership.
-3. The runner arms `/etc/ld.so.preload`. Establish that it and the fixed payload
+2. The runner arms `/etc/ld.so.preload`. Establish that it and the fixed payload
    paths are not owned by another integration; preserve any existing content. Have
    a working disarm route before arming. If no such route is available, do not arm it.
-4. Inspect the selected runner's cleanup. The reviewed version uses NAS-side `bash`
-   in one cleanup path, although the recovered NAS lacked `/bin/bash`; it also uses
-   a workstation `timeout` executable, which macOS does not supply by default.
-   Correct/verify those execution prerequisites in the chosen runner before use;
-   a payload changed to `/bin/sh` does not also repair cleanup.
-5. Do not publish unredacted runner output. Its failure paths can include temporary
+3. Do not publish unredacted runner output. Its failure paths can include temporary
    SMB credentials; mounting SMB also passes a credential-bearing URL to a local
    process. Keep logs private and redact before sharing.
 
-These are limitations of the external runner, not capabilities silently supplied
-by this skill. A request to review or share the skill never authorizes a live rerun.
+These are limitations of the runner, not capabilities silently supplied by this
+skill. A request to review or share the skill never authorizes a live rerun.
 
 ## Authorized recovery phases
 
@@ -123,8 +99,7 @@ Once all prerequisites and stop conditions have been resolved, run the tool **fr
 repository root** (generated cleanup artifacts are relative to the working directory):
 
 ```sh
-conda run --no-capture-output -n minas-root python scripts/xiaomi-nas-root.py "$NAS_IP" \
-  --cert-dir "$CERT_DIR"
+python3 scripts/xiaomi-nas-root.py "$NAS_IP" --cert-dir "$CERT_DIR"
 ```
 
 Observe each phase before proceeding:
@@ -208,17 +183,8 @@ socket-start hook as described in [reboot-persistence.md](reboot-persistence.md)
 - Close only the temporary recovery listener after authenticated root SSH has been
   independently verified. Do not leave an unauthenticated root listener as persistence.
 
-## Storage follow-up, only when separately requested
+## Out of scope
 
-The SSH flow must not rewrite media or USB mappings. The recovery incident also
-showed three independent storage issues: the safe-eject overlay had not started,
-SMB regeneration restored a stale UCI path, and the Mac retained a stale SMB mount
-after actual ejection. They were not evidence that the root chain had failed.
-
-Reusable fixes: restore overlay startup before lifecycle reconciliation; persist
-SMB paths in UCI rather than patching rendered `smb.conf` alone; use a fixed,
-lifecycle-managed bind selected by serial plus filesystem UUID; reconnect the
-specific stale client share. A manual lifecycle call uses `reconcile`, not `pool`
-without its required hotplug environment. Run a media scan as the library owner,
-not root, when the scanner is user-scoped. No personal disk IDs, share names, or
-library IDs from the recovery device are required by this skill.
+This skill is only for gaining root and restoring secure SSH command execution.
+It does not inspect, check, or modify SMB disk/media mapping settings, USB media
+bindings, or the media library; handle those only under a separate explicit request.

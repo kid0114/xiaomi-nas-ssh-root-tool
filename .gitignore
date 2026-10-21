@@ -9,3 +9,6 @@ captures/
 nas-root-key*
 .wdav_creds
 .env
+cleanup-*.sh
+scripts/pwn_trigger.so
+__pycache__/

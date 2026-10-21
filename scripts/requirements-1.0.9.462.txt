@@ -1,0 +1,5 @@
+# xiaomi-nas-root-tool 依赖
+# Python 3.9+；除 keystone-engine 外全部使用标准库
+# 实测环境: Python 3.11 + keystone-engine 0.9.2
+
+keystone-engine>=0.9.2

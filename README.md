@@ -14,9 +14,10 @@
 
 ## 分支说明
 
-- `main`：稳定分支，保留已验证的 macOS bash 版流程；
+- `main`：稳定分支，保留已验证的 macOS bash 版流程（固件 ≤1.0.8.x）；
 - `persistence-research`：macOS bash 版普通重启持久化研究与实现；
 - `python-cross-platform`：Python 跨平台分支，包含 `scripts/enable-xiaomi-nas-ssh-py.py`，已在 Windows 11 + conda Python 3.13.15 上完整跑通，后续 Windows/Linux/macOS 跨平台改动优先在此分支进行。
+- **`firmware-1.0.9.462-macos`：固件 1.0.9.462 专用分支**。新固件已修补本分支的 WebDAV 视频路径注入，改用 UCI heredoc 注入链（`scripts/xiaomi-nas-root.py`，Python 标准库零依赖、无需 Conda/Homebrew，带 `--preflight` 本地预检），含恢复可用 SSH 命令执行与普通重启持久化双 hook 的完整 skill。**固件 1.0.9.462 的用户请直接使用该分支，不要在新固件上重试本分支（main）的旧流程**；旧固件用户也不要用该分支的脚本（未在旧固件测试）。
 
 本仓库包含：
 

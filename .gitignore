@@ -12,3 +12,6 @@ nas-root-key*
 cleanup-*.sh
 scripts/pwn_trigger.so
 __pycache__/
+*.bak
+*.so
+scripts/__pycache__/

